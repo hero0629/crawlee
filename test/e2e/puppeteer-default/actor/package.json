@@ -13,7 +13,7 @@
         "@crawlee/puppeteer": "file:./packages/puppeteer-crawler",
         "@crawlee/types": "file:./packages/types",
         "@crawlee/utils": "file:./packages/utils",
-        "puppeteer": "*"
+        "puppeteer": "^18"
     },
     "overrides": {
         "apify": {
