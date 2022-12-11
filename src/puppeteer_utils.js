@@ -1,19 +1,16 @@
 import * as fs from 'fs';
+import ow from 'ow';
 import * as vm from 'vm';
 import * as util from 'util';
 import * as _ from 'underscore';
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import { checkParamPrototypeOrThrow } from 'apify-shared/utilities';
 import * as LruCache from 'apify-shared/lru_cache';
 import { Page, Response, DirectNavigationOptions } from 'puppeteer'; // eslint-disable-line no-unused-vars
 import log from './utils_log';
+import { validators } from './validators';
 
-import { RequestQueue, RequestQueueLocal } from './request_queue';
-import Request from './request';
-import { enqueueLinks } from './enqueue_links/enqueue_links';
 import { enqueueLinksByClickingElements } from './enqueue_links/click_elements';
 import { addInterceptRequestHandler, removeInterceptRequestHandler } from './puppeteer_request_interception';
-import { openKeyValueStore } from './key_value_store';
+import { openKeyValueStore } from './storages/key_value_store';
 
 const jqueryPath = require.resolve('jquery/dist/jquery.min');
 const underscorePath = require.resolve('underscore/underscore-min');
@@ -23,48 +20,15 @@ const MAX_INJECT_FILE_CACHE_SIZE = 10;
 const DEFAULT_BLOCK_REQUEST_URL_PATTERNS = ['.css', '.jpg', '.jpeg', '.png', '.svg', '.gif', '.woff', '.pdf', '.zip'];
 
 /**
- * Hides certain Puppeteer fingerprints from the page, in order to help avoid detection of the crawler.
- * The function should be called on a newly-created page object before navigating to the target crawled page.
- *
- * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
- * @return {Promise<void>}
- * @memberOf puppeteer
- * @ignore
+ * @typedef {object} CompiledScriptParams
+ * @property {Page} params.page
+ * @property {Request} params.request
  */
-const hideWebDriver = async (page) => {
-    log.deprecated('Apify.utils.puppeteer.hideWebDriver() is deprecated. Use launchPuppeteerOptions.stealth instead.');
-    checkParamOrThrow(page, 'page', 'Object');
-
-    await page.evaluateOnNewDocument(() => {
-        var modifiedNavigator; // eslint-disable-line no-var
-        try {
-            if (Navigator.prototype.hasOwnProperty('webdriver')) { // eslint-disable-line no-prototype-builtins
-                modifiedNavigator = Navigator.prototype;
-            } else {
-                modifiedNavigator = Object.create(window.navigator);
-                Object.defineProperty(window, 'navigator', {
-                    value: modifiedNavigator,
-                    configurable: false,
-                    enumerable: true,
-                    writable: false,
-                });
-            }
-            Object.defineProperties(modifiedNavigator, {
-                webdriver: {
-                    configurable: true,
-                    get: function () { // eslint-disable-line object-shorthand
-                        return false;
-                    },
-                },
-            });
-            // Date.prototype.getTimezoneOffset = function () { return -4 * 60; };
-        } catch (e) {
-            console.error(e);
-        }
-    });
-};
-
+/**
+ * @callback CompiledScriptFunction
+ * @param {CompiledScriptParams} params
+ * @returns {Promise<*>}
+ */
 /**
  * Cache contents of previously injected files to limit file system access.
  */
@@ -78,9 +42,9 @@ const injectedFilesCache = new LruCache({ maxLength: MAX_INJECT_FILE_CACHE_SIZE 
  * File contents are cached for up to 10 files to limit file system access.
  *
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
  * @param {string} filePath File path
- * @param {Object} [options]
+ * @param {object} [options]
  * @param {boolean} [options.surviveNavigations]
  *   Enables the injected script to survive page navigations and reloads without need to be re-injected manually.
  *   This does not mean, however, that internal state will be preserved. Just that it will be automatically
@@ -89,9 +53,11 @@ const injectedFilesCache = new LruCache({ maxLength: MAX_INJECT_FILE_CACHE_SIZE 
  * @memberOf puppeteer
  */
 const injectFile = async (page, filePath, options = {}) => {
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(filePath, 'filePath', 'String');
-    checkParamOrThrow(options, 'options', 'Object');
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(filePath, ow.string);
+    ow(options, ow.object.exactShape({
+        surviveNavigations: ow.optional.boolean,
+    }));
 
     let contents = injectedFilesCache.get(filePath);
     if (!contents) {
@@ -105,7 +71,7 @@ const injectFile = async (page, filePath, options = {}) => {
 };
 
 /**
- * Injects the [](https://jquery.com/) library into a Puppeteer page.
+ * Injects the [jQuery](https://jquery.com/) library into a Puppeteer page.
  * jQuery is often useful for various web scraping and crawling tasks.
  * For example, it can help extract text from HTML elements using CSS selectors.
  *
@@ -124,21 +90,21 @@ const injectFile = async (page, filePath, options = {}) => {
  * ```
  *
  * Note that `injectJQuery()` does not affect the Puppeteer's
- * [](https://pptr.dev/#?product=Puppeteer&show=api-pageselector)
+ * [`page.$()`](https://pptr.dev/#?product=Puppeteer&show=api-pageselector)
  * function in any way.
  *
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
  * @return {Promise<*>}
  * @memberOf puppeteer
  */
 const injectJQuery = (page) => {
-    checkParamOrThrow(page, 'page', 'Object');
+    ow(page, ow.object.validate(validators.browserPage));
     return injectFile(page, jqueryPath, { surviveNavigations: true });
 };
 
 /**
- * Injects the [](https://underscorejs.org/) library into a Puppeteer page.
+ * Injects the [Underscore](https://underscorejs.org/) library into a Puppeteer page.
  *
  * Beware that the injected Underscore object will be set to the `window._` variable and thus it might cause conflicts with
  * libraries included by the page that use the same variable name.
@@ -154,41 +120,14 @@ const injectJQuery = (page) => {
  * });
  * ```
  *
- * @param {Page} page Puppeteer [Page](https://github.com/GoogleChrome/puppeteer/blob/master/docs/api.md#class-page) object.
+ * @param {Page} page Puppeteer [Page](https://github.com/puppeteer/puppeteer/blob/master/docs/api.md#class-page) object.
  * @return {Promise<*>}
  * @memberOf puppeteer
  */
 const injectUnderscore = (page) => {
-    checkParamOrThrow(page, 'page', 'Object');
+    ow(page, ow.object.validate(validators.browserPage));
     return injectFile(page, underscorePath, { surviveNavigations: true });
 };
-
-/**
- * DEPRECATED!
- * TODO: Remove after v1.0.0 gets released.
- * @ignore
- */
-const enqueueRequestsFromClickableElements = async (page, selector, purls, requestQueue, requestOpts = {}) => {
-    log.warning('Function enqueueRequestsFromClickableElements is deprecated!!! Use `enqueueLinks` instead!');
-
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(purls, 'purls', 'Array');
-    checkParamPrototypeOrThrow(requestQueue, 'requestQueue', [RequestQueue, RequestQueueLocal], 'Apify.RequestQueue');
-    checkParamOrThrow(requestOpts, 'requestOpts', 'Object');
-
-    /* istanbul ignore next */
-    const getHrefs = linkEls => linkEls.map(link => link.href).filter(href => !!href);
-    const matchesPseudoUrl = url => _.some(purls, purl => purl.matches(url));
-    const urls = await page.$$eval(selector, getHrefs);
-    const requests = urls.filter(matchesPseudoUrl).map(url => new Request(Object.assign({ url }, requestOpts)));
-
-    const queueOperationInfos = [];
-    for (const request of requests) {
-        queueOperationInfos.push(await requestQueue.addRequest(request));
-    }
-    return queueOperationInfos;
-};
-
 
 /**
  * Forces the Puppeteer browser tab to block loading URLs that match a provided pattern.
@@ -230,8 +169,8 @@ const enqueueRequestsFromClickableElements = async (page, selector, purls, reque
  * ```
  *
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
- * @param {Object} [options]
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ * @param {object} [options]
  * @param {string[]} [options.urlPatterns]
  *   The patterns of URLs to block from being loaded by the browser.
  *   Only `*` can be used as a wildcard. It is also automatically added to the beginning
@@ -243,16 +182,16 @@ const enqueueRequestsFromClickableElements = async (page, selector, purls, reque
  * @memberOf puppeteer
  */
 const blockRequests = async (page, options = {}) => {
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(options, 'options', 'Object');
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(options, ow.object.exactShape({
+        urlPatterns: ow.optional.array.ofType(ow.string),
+        extraUrlPatterns: ow.optional.array.ofType(ow.string),
+    }));
 
     const {
         urlPatterns = DEFAULT_BLOCK_REQUEST_URL_PATTERNS,
         extraUrlPatterns = [],
     } = options;
-
-    checkParamOrThrow(urlPatterns, 'options.urlPatterns', '[String]');
-    checkParamOrThrow(extraUrlPatterns, 'options.extraUrlPatterns', '[String]');
 
     const patternsToBlock = [...urlPatterns, ...extraUrlPatterns];
 
@@ -282,8 +221,8 @@ const blockResources = async (page, resourceTypes = ['stylesheet', 'font', 'imag
  * *IMPORTANT*: Caching responses stores them to memory, so too loose rules could cause memory leaks for longer running crawlers.
  *   This issue should be resolved or atleast mitigated in future iterations of this feature.
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
- * @param {Object} cache
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ * @param {Object<string, *>} cache
  *   Object in which responses are stored
  * @param {Array<(string|RegExp)>} responseUrlRules
  *   List of rules that are used to check if the response should be cached.
@@ -293,15 +232,12 @@ const blockResources = async (page, resourceTypes = ['stylesheet', 'font', 'imag
  * @deprecated
  */
 const cacheResponses = async (page, cache, responseUrlRules) => {
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(cache, 'cache', 'Object');
-    checkParamOrThrow(responseUrlRules, 'responseUrlRules', 'Array');
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(cache, ow.object);
+    ow(responseUrlRules, ow.array.ofType(ow.any(ow.string, ow.regExp)));
 
     log.deprecated('Apify.utils.puppeteer.cacheResponses() has a high impact on performance '
         + 'in recent versions of Puppeteer so it\'s use is discouraged until this issue resolves.');
-
-    // Check that rules are either String or RegExp
-    responseUrlRules.forEach((rule, index) => checkParamOrThrow(rule, `responseUrlRules[${index}]`, 'String | RegExp'));
 
     await addInterceptRequestHandler(page, async (request) => {
         const url = request.url();
@@ -349,7 +285,7 @@ const cacheResponses = async (page, cache, responseUrlRules) => {
  *    request: Request,
  * }
  * ```
- * Where `page` is a Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page)
+ * Where `page` is a Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page)
  * and `request` is a {@link Request}.
  *
  * The function is compiled by using the `scriptString` parameter as the function's body,
@@ -367,8 +303,8 @@ const cacheResponses = async (page, cache, responseUrlRules) => {
  * secured copies beforehand.
  *
  * @param {string} scriptString
- * @param {Object} context
- * @return {Function} `async ({ page, request }) => { scriptString }`
+ * @param {Object<string, *>} context
+ * @return {CompiledScriptFunction}
  * @memberOf puppeteer
  */
 const compileScript = (scriptString, context = Object.create(null)) => {
@@ -396,29 +332,37 @@ const compileScript = (scriptString, context = Object.create(null)) => {
  * browser cache which degrades performance.
  *
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
  * @param {Request} request
- * @param {DirectNavigationOptions} gotoOptions Custom options for `page.goto()`.
- * @return {Promise<(Response | null)>}
+ * @param {DirectNavigationOptions} [gotoOptions] Custom options for `page.goto()`.
+ * @return {Promise<(Response|null)>}
  *
  * @memberOf puppeteer
  * @name gotoExtended
  */
 export const gotoExtended = async (page, request, gotoOptions = {}) => {
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamPrototypeOrThrow(request, 'request', Request, 'Apify.Request');
-    checkParamOrThrow(gotoOptions, 'gotoOptions', 'Object');
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(request, ow.object.partialShape({
+        url: ow.string.url,
+        method: ow.optional.string,
+        headers: ow.optional.object,
+        payload: ow.optional.any(ow.string, ow.buffer),
+    }));
+    ow(gotoOptions, ow.object);
 
-    const { method, headers, payload } = request;
+    const { url, method, headers, payload } = request;
 
     if (method !== 'GET' || payload || !_.isEmpty(headers)) {
+        // This is not deprecated, we use it to log only once.
         log.deprecated('Using other request methods than GET, rewriting headers and adding payloads has a high impact on performance '
             + 'in recent versions of Puppeteer. Use only when necessary.');
         let wasCalled = false;
         const interceptRequestHandler = async (interceptedRequest) => {
             // We want to ensure that this won't get executed again in a case that there is a subsequent request
             // for example for some asset file link from main HTML.
-            if (wasCalled) return interceptedRequest.continue();
+            if (wasCalled) {
+                return interceptedRequest.continue();
+            }
 
             wasCalled = true;
             const overrides = {};
@@ -426,37 +370,44 @@ export const gotoExtended = async (page, request, gotoOptions = {}) => {
             if (method !== 'GET') overrides.method = method;
             if (payload) overrides.postData = payload;
             if (!_.isEmpty(headers)) overrides.headers = headers;
-
-            await interceptedRequest.continue(overrides);
-            await removeInterceptRequestHandler(page, interceptRequestHandler); // We wan't this to be called only for the initial request.
+            await removeInterceptRequestHandler(page, interceptRequestHandler);
+            interceptedRequest.continue(overrides);
         };
 
         await addInterceptRequestHandler(page, interceptRequestHandler);
     }
 
-    return page.goto(request.url, gotoOptions);
+    return page.goto(url, gotoOptions);
 };
 
 /**
  * Scrolls to the bottom of a page, or until it times out.
  * Loads dynamic content when it hits the bottom of a page, and then continues scrolling.
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
- * @param {Object} [options]
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ * @param {object} [options]
  * @param {number} [options.timeoutSecs=0]
  *   How many seconds to scroll for. If 0, will scroll until bottom of page.
  * @param {number} [options.waitForSecs=4]
  *   How many seconds to wait for no new content to load before exit.
+ * @param {boolean} [options.scrollDownAndUp=false]
+ *   If true, it will scroll up a bit after each scroll down. This is required on some websites for the scroll to work.
+ * @param {string} [options.buttonSelector]
+ *   Optionally checks and clicks a button if it appears while scrolling. This is required on some websites for the scroll to work.
  * @returns {Promise<void>}
  * @memberOf puppeteer
  * @name infiniteScroll
  */
 export const infiniteScroll = async (page, options = {}) => {
-    const { timeoutSecs = 0, waitForSecs = 4 } = options;
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(options, ow.object.exactShape({
+        timeoutSecs: ow.optional.number,
+        waitForSecs: ow.optional.number,
+        scrollDownAndUp: ow.optional.boolean,
+        buttonSelector: ow.optional.string,
+    }));
 
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(timeoutSecs, 'timeoutSecs', 'Number');
-    checkParamOrThrow(waitForSecs, 'waitForSecs', 'Number');
+    const { timeoutSecs = 0, waitForSecs = 4, scrollDownAndUp = false, buttonSelector } = options;
 
     let finished;
     const startTime = Date.now();
@@ -502,16 +453,33 @@ export const infiniteScroll = async (page, options = {}) => {
         }, SCROLL_HEIGHT_IF_ZERO);
     };
 
+    const maybeClickButton = async () => {
+        const button = await page.$(buttonSelector);
+        // Box model returns null if the button is not visible
+        if (button && await button.boxModel()) {
+            await button.click({ delay: 10 });
+        }
+    };
+
     while (!finished) {
         await doScroll();
+        await page.waitForTimeout(50);
+        if (scrollDownAndUp) {
+            await page.evaluate(() => {
+                window.scrollBy(0, -1000);
+            });
+        }
+        if (buttonSelector) {
+            await maybeClickButton();
+        }
     }
 };
 
 /**
  * Saves a full screenshot and HTML of the current page into a Key-Value store.
  * @param {Page} page
- *   Puppeteer [](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
- * @param {Object} [options]
+ *   Puppeteer [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page) object.
+ * @param {object} [options]
  * @param {string} [options.key=SNAPSHOT]
  *   Key under which the screenshot and HTML will be saved. `.jpg` will be appended for screenshot and `.html` for HTML.
  * @param {number} [options.screenshotQuality=50]
@@ -520,50 +488,51 @@ export const infiniteScroll = async (page, options = {}) => {
  *   If true, it will save a full screenshot of the current page as a record with `key` appended by `.jpg`.
  * @param {boolean} [options.saveHtml=true]
  *   If true, it will save a full HTML of the current page as a record with `key` appended by `.html`.
- * @param {string} [options.keyValueStoreName=null]
+ * @param {string|null} [options.keyValueStoreName=null]
  *   Name or id of the Key-Value store where snapshot is saved. By default it is saved to default Key-Value store.
  * @returns {Promise<void>}
  * @memberOf puppeteer
  * @name saveSnapshot
  */
 const saveSnapshot = async (page, options = {}) => {
-    const DEFAULT_KEY = 'SNAPSHOT';
-    let key;
+    ow(page, ow.object.validate(validators.browserPage));
+    ow(options, ow.object.exactShape({
+        key: ow.optional.string.nonEmpty,
+        screenshotQuality: ow.optional.number,
+        saveScreenshot: ow.optional.boolean,
+        saveHtml: ow.optional.boolean,
+        keyValueStoreName: ow.optional.string,
+    }));
+
+    const {
+        key = 'SNAPSHOT',
+        screenshotQuality = 50,
+        saveScreenshot = true,
+        saveHtml = true,
+        keyValueStoreName,
+    } = options;
+
     try {
-        checkParamOrThrow(page, 'page', 'Object');
-        checkParamOrThrow(options, 'options', 'Object');
-
-        const { saveScreenshot = true, saveHtml = true, keyValueStoreName = null, screenshotQuality = 50 } = options;
-        key = options.key || DEFAULT_KEY;
-
-        checkParamOrThrow(saveScreenshot, 'saveScreenshot', 'Boolean');
-        checkParamOrThrow(saveHtml, 'saveHtml', 'Boolean');
-        checkParamOrThrow(key, 'key', 'String');
-        checkParamOrThrow(keyValueStoreName, 'keyValueStoreName', 'Maybe String');
-        checkParamOrThrow(screenshotQuality, 'screenshotQuality', 'Number');
-
         const store = await openKeyValueStore(keyValueStoreName);
 
         if (saveScreenshot) {
+            const screenshotName = `${key}.jpg`;
             const screenshotBuffer = await page.screenshot({ fullPage: true, screenshotQuality, type: 'jpeg' });
-            await store.setValue(`${key}.jpg`, screenshotBuffer, { contentType: 'image/jpeg' });
+            await store.setValue(screenshotName, screenshotBuffer, { contentType: 'image/jpeg' });
         }
         if (saveHtml) {
+            const htmlName = `${key}.html`;
             const html = await page.content();
-            await store.setValue(`${key}.html`, html, { contentType: 'text/html' });
+            await store.setValue(htmlName, html, { contentType: 'text/html' });
         }
-    } catch (e) {
-        // I like this more than having to investigate stack trace
-        log.error(`saveSnapshot with key ${key || ''} failed with error:`);
-        throw e;
+    } catch (err) {
+        throw new Error(`saveSnapshot with key ${key} failed.\nCause:${err.message}`);
     }
 };
 
-let logEnqueueLinksDeprecationWarning = true;
-
 /**
  * A namespace that contains various utilities for
- * [Puppeteer](https://github.com/GoogleChrome/puppeteer) - the headless Chrome Node API.
+ * [Puppeteer](https://github.com/puppeteer/puppeteer) - the headless Chrome Node API.
  *
  * **Example usage:**
  *
@@ -582,19 +551,9 @@ let logEnqueueLinksDeprecationWarning = true;
  * @namespace puppeteer
  */
 export const puppeteerUtils = {
-    hideWebDriver,
     injectFile,
     injectJQuery,
     injectUnderscore,
-    enqueueRequestsFromClickableElements,
-    enqueueLinks: async (...args) => {
-        if (logEnqueueLinksDeprecationWarning) {
-            log.warning('Using enqueueLinks() from the Apify.utils.puppeteer namespace is deprecated. '
-                + 'Please use the Apify.utils.enqueueLinks().');
-            logEnqueueLinksDeprecationWarning = false;
-            return enqueueLinks(...args);
-        }
-    },
     enqueueLinksByClickingElements,
     blockRequests,
     blockResources,

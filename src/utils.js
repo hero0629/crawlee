@@ -1,30 +1,33 @@
 import * as psTree from '@apify/ps-tree';
+// eslint-disable-next-line import/no-extraneous-dependencies
+import * as ApifyStorageLocal from '@apify/storage-local';
+import { execSync } from 'child_process';
 import * as ApifyClient from 'apify-client';
-import { checkParamOrThrow } from 'apify-client/build/utils';
 import { version as apifyClientVersion } from 'apify-client/package.json';
-import { ENV_VARS, LOCAL_ENV_VARS } from 'apify-shared/consts';
-import { getRandomInt } from 'apify-shared/utilities';
+import { ACT_JOB_TERMINAL_STATUSES, ENV_VARS, LOCAL_ENV_VARS } from 'apify-shared/consts';
 import * as cheerio from 'cheerio';
 import * as contentTypeParser from 'content-type';
 import * as fs from 'fs';
-import * as fsExtra from 'fs-extra';
 import * as mime from 'mime-types';
 import * as os from 'os';
+// eslint-disable-next-line import/no-extraneous-dependencies
+import ow from 'ow';
 import * as path from 'path';
-import * as requestPromise from 'request-promise-native';
 import * as semver from 'semver';
 import * as _ from 'underscore';
 import { URL } from 'url';
 import * as util from 'util';
-import { USER_AGENT_LIST } from './constants';
-import log from './utils_log';
-import { version as apifyVersion } from '../package.json';
 
 // TYPE IMPORTS
 /* eslint-disable no-unused-vars,import/named,import/no-duplicates,import/order */
 import { IncomingMessage } from 'http';
 import { Response as PuppeteerResponse } from 'puppeteer';
+import { version as apifyVersion } from '../package.json';
+import log from './utils_log';
+import * as requestUtils from './utils_request';
 import Request, { RequestOptions } from './request';
+import { ActorRun } from './typedefs';
+
 /* eslint-enable no-unused-vars,import/named,import/no-duplicates,import/order */
 
 /**
@@ -40,28 +43,71 @@ const URL_NO_COMMAS_REGEX = RegExp('https?://(www\\.)?[\\p{L}0-9][-\\p{L}0-9@:%.
  */
 const URL_WITH_COMMAS_REGEX = RegExp('https?://(www\\.)?[\\p{L}0-9][-\\p{L}0-9@:%._\\+~#=]{0,254}[\\p{L}0-9]\\.[a-z]{2,63}(:\\d{1,5})?(/[-\\p{L}0-9@:%_\\+,.~#?&//=\\(\\)]*)?', 'giu'); // eslint-disable-line
 
-const ensureDirPromised = util.promisify(fsExtra.ensureDir);
+/**
+ * Allows turning off the warning that gets printed whenever an actor is run with an outdated SDK on the Apify Platform.
+ * @type {string}
+ */
+const DISABLE_OUTDATED_WARNING = 'APIFY_DISABLE_OUTDATED_WARNING';
+
 const psTreePromised = util.promisify(psTree);
 
 /**
- * Creates an instance of ApifyClient using options as defined in the environment variables.
- * This function is exported to enable unit testing.
+ * Returns a new instance of the Apify API client. The `ApifyClient` class is provided
+ * by the <a href="https://www.npmjs.com/package/apify-client" target="_blank">apify-client</a>
+ * NPM package, and it is automatically configured using the `APIFY_API_BASE_URL`, and `APIFY_TOKEN`
+ * environment variables. You can override the token via the available options. That's useful
+ * if you want to use the client as a different Apify user than the SDK internals are using.
  *
- * @returns {*}
- * @ignore
+ * @param {object} [options]
+ * @param {string} [options.token]
+ * @param {string} [options.maxRetries]
+ * @param {string} [options.minDelayBetweenRetriesMillis]
+ * @memberof module:Apify
+ * @function
+ * @name newClient
+ * @return {ApifyClient}
  */
-export const newClient = () => {
-    const opts = {
-        userId: process.env[ENV_VARS.USER_ID] || null,
-        token: process.env[ENV_VARS.TOKEN] || null,
-    };
+export const newClient = (options = {}) => {
+    ow(options, ow.object.exactShape({
+        baseUrl: ow.optional.string.url,
+        token: ow.optional.string,
+        maxRetries: ow.optional.number,
+        minDelayBetweenRetriesMillis: ow.optional.number,
+    }));
+    const {
+        baseUrl = process.env[ENV_VARS.API_BASE_URL],
+        token = process.env[ENV_VARS.TOKEN],
+    } = options;
 
-    // Only set baseUrl if overridden by env var, so that 'https://api.apify.com' is used by default.
-    // This simplifies local development, which should run against production unless user wants otherwise.
-    const apiBaseUrl = process.env[ENV_VARS.API_BASE_URL];
-    if (apiBaseUrl) opts.baseUrl = apiBaseUrl;
+    return new ApifyClient({
+        ...options,
+        baseUrl,
+        token,
+    });
+};
 
-    return new ApifyClient(opts);
+/**
+ * Creates an instance of ApifyStorageLocal using options as defined in the environment variables.
+ * @param {object} [options]
+ * @return {ApifyStorageLocal}
+ */
+export const newStorageLocal = (options = {}) => {
+    const {
+        storageDir = process.env[ENV_VARS.LOCAL_STORAGE_DIR] || LOCAL_ENV_VARS[ENV_VARS.LOCAL_STORAGE_DIR],
+    } = options;
+
+    const storage = new ApifyStorageLocal({
+        ...options,
+        storageDir,
+    });
+
+    process.on('exit', () => {
+        // TODO this is not public API, need to update
+        // storage local with some teardown
+        storage.dbConnections.closeAllConnections();
+    });
+
+    return storage;
 };
 
 /**
@@ -77,36 +123,26 @@ export const logSystemInfo = () => {
 };
 
 /**
- * Gets the default instance of the `ApifyClient` class provided
- * <a href="https://docs.apify.com/api/apify-client-js/latest"
- * target="_blank">apify-client</a> by the NPM package.
- * The instance is created automatically by the Apify SDK and it is configured using the
- * `APIFY_API_BASE_URL`, `APIFY_USER_ID` and `APIFY_TOKEN` environment variables.
- *
- * The instance is used for all underlying calls to the Apify API in functions such as
- * {@link Apify#getValue} or {@link Apify#call}.
- * The settings of the client can be globally altered by calling the
- * <a href="https://docs.apify.com/api/apify-client-js/latest#ApifyClient-setOptions"
- * target="_blank">`Apify.client.setOptions()`</a> function.
- * Beware that altering these settings might have unintended effects on the entire Apify SDK package.
+ * The default instance of `ApifyClient` used internally
+ * by the SDK.
  *
  * @type {*}
- *
- * @memberof module:Apify
- * @name client
+ * @ignore
  */
 export const apifyClient = newClient();
 
 /**
- * Returns a result of `Promise.resolve()`.
+ * The default instance of the `ApifyStorageLocal` class.
+ * The instance is created automatically by the Apify SDK and it is configured using the
+ * `APIFY_LOCAL_STORAGE_DIR` environment variable.
  *
- * @returns {Promise<void>}
+ * The instance is lazy loaded and used for local emulation of calls to the Apify API
+ * in Apify Storages such as {@link RequestQueue}.
  *
+ * @type {*}
  * @ignore
  */
-export const newPromise = () => {
-    return Promise.resolve();
-};
+export const apifyStorageLocal = newStorageLocal();
 
 /**
  * Adds charset=utf-8 to given content type if this parameter is missing.
@@ -137,7 +173,7 @@ const createIsDockerPromise = () => {
 
     const promise2 = util
         .promisify(fs.readFile)('/proc/self/cgroup', 'utf8')
-        .then(content => content.indexOf('docker') !== -1)
+        .then((content) => content.indexOf('docker') !== -1)
         .catch(() => false);
 
     return Promise
@@ -161,26 +197,6 @@ export const isDocker = (forceReset) => {
 
     return isDockerPromiseCache;
 };
-
-/**
- * Sums an array of numbers.
- *
- * @param {number[]} arr An array of numbers.
- * @return {number} Sum of the numbers.
- *
- * @ignore
- */
-export const sum = arr => arr.reduce((total, c) => total + c, 0);
-
-/**
- * Computes an average of an array of numbers.
- *
- * @param {number[]} arr An array of numbers.
- * @return {number} Average value.
- *
- * @ignore
- */
-export const avg = arr => sum(arr) / arr.length;
 
 /**
  * Computes a weighted average of an array of numbers, complemented by an array of weights.
@@ -229,50 +245,91 @@ export const weightedAvg = (arrValues, arrWeights) => {
  * @function
  */
 export const getMemoryInfo = async () => {
-    const [isDockerVar, processes] = await Promise.all([
-        // module.exports must be here so that we can mock it.
-        module.exports.isDocker(),
-        // Query both root and child processes
-        psTreePromised(process.pid, true),
-    ]);
+    // lambda does *not* have `ps` and other command line tools
+    // required to extract memory usage.
+    const isLambdaEnvironment = process.platform === 'linux'
+        && !!process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE;
+
+    // module.exports must be here so that we can mock it.
+    const isDockerVar = !isLambdaEnvironment && (await module.exports.isDocker());
 
     let mainProcessBytes = -1;
     let childProcessesBytes = 0;
-    processes.forEach((rec) => {
-        // Skip the 'ps' or 'wmic' commands used by ps-tree to query the processes
-        if (rec.COMMAND === 'ps' || rec.COMMAND === 'WMIC.exe') {
-            return;
-        }
-        const bytes = parseInt(rec.RSS, 10);
-        // Obtain main process' memory separately
-        if (rec.PID === `${process.pid}`) {
-            mainProcessBytes = bytes;
-            return;
-        }
-        childProcessesBytes += bytes;
-    });
+
+    if (isLambdaEnvironment) {
+        // reported in bytes
+        mainProcessBytes = process.memoryUsage().rss;
+
+        // https://stackoverflow.com/a/55914335/129415
+        childProcessesBytes = execSync('cat /proc/meminfo')
+            .toString()
+            .split(/[\n: ]/)
+            .filter((val) => val.trim())[19]
+            // meminfo reports in kb, not bytes
+            * 1000
+            // the total used memory is reported by meminfo
+            // subtract memory used by the main node proces
+            // in order to infer memory used by any child processes
+            - mainProcessBytes;
+    } else {
+        // Query both root and child processes
+        const processes = await psTreePromised(process.pid, true);
+
+        processes.forEach((rec) => {
+            // Skip the 'ps' or 'wmic' commands used by ps-tree to query the processes
+            if (rec.COMMAND === 'ps' || rec.COMMAND === 'WMIC.exe') {
+                return;
+            }
+            const bytes = parseInt(rec.RSS, 10);
+            // Obtain main process' memory separately
+            if (rec.PID === `${process.pid}`) {
+                mainProcessBytes = bytes;
+                return;
+            }
+            childProcessesBytes += bytes;
+        });
+    }
 
     let totalBytes;
-    let freeBytes;
     let usedBytes;
+    let freeBytes;
 
-    if (!isDockerVar) {
-        totalBytes = os.totalmem();
-        freeBytes = os.freemem();
-        usedBytes = totalBytes - freeBytes;
-    } else {
+    if (isLambdaEnvironment) {
+        // memory size is defined in megabytes
+        totalBytes = parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE, 10) * 1000000;
+        usedBytes = mainProcessBytes + childProcessesBytes;
+        freeBytes = totalBytes - usedBytes;
+
+        log.debug(`lambda size of ${totalBytes} with ${freeBytes} free bytes`);
+    } else if (isDockerVar) {
         // When running inside Docker container, use container memory limits
         // This must be promisified here so that we can mock it.
         const readPromised = util.promisify(fs.readFile);
 
-        const [totalBytesStr, usedBytesStr] = await Promise.all([
-            readPromised('/sys/fs/cgroup/memory/memory.limit_in_bytes'),
-            readPromised('/sys/fs/cgroup/memory/memory.usage_in_bytes'),
-        ]);
-
-        totalBytes = parseInt(totalBytesStr, 10);
-        usedBytes = parseInt(usedBytesStr, 10);
-        freeBytes = totalBytes - usedBytes;
+        try {
+            const [totalBytesStr, usedBytesStr] = await Promise.all([
+                readPromised('/sys/fs/cgroup/memory/memory.limit_in_bytes'),
+                readPromised('/sys/fs/cgroup/memory/memory.usage_in_bytes'),
+            ]);
+            totalBytes = parseInt(totalBytesStr, 10);
+            // https://unix.stackexchange.com/q/420906
+            const containerRunsWithUnlimitedMemory = totalBytes > Number.MAX_SAFE_INTEGER;
+            if (containerRunsWithUnlimitedMemory) totalBytes = os.totalmem();
+            usedBytes = parseInt(usedBytesStr, 10);
+            freeBytes = totalBytes - usedBytes;
+        } catch (err) {
+            // log.deprecated logs a warning only once
+            log.deprecated('Your environment is Docker, but your system does not support memory cgroups. '
+                + 'If you\'re running containers with limited memory, memory auto-scaling will not work properly.\n\n'
+                + `Cause: ${err.message}`);
+            totalBytes = os.totalmem();
+            freeBytes = os.freemem();
+            usedBytes = totalBytes - freeBytes;
+        }
+    } else {
+        totalBytes = os.totalmem();
+        freeBytes = os.freemem();
+        usedBytes = totalBytes - freeBytes;
     }
 
     return {
@@ -285,30 +342,7 @@ export const getMemoryInfo = async () => {
 };
 
 /**
- * Helper function that determines if given parameter is an instance of Promise.
- *
- * @ignore
- */
-export const isPromise = (maybePromise) => {
-    return maybePromise && typeof maybePromise.then === 'function' && typeof maybePromise.catch === 'function';
-};
-
-/**
- * Returns true if node is in production environment and false otherwise.
- *
- * @ignore
- */
-export const isProduction = () => process.env.NODE_ENV === 'production';
-
-/**
- * Helper function used for local implementations. Creates dir.
- *
- * @ignore
- */
-export const ensureDirExists = dirPath => ensureDirPromised(dirPath);
-
-/**
- * Helper function that returns the first key from plan object.
+ * Helper function that returns the first key from plain object.
  *
  * @ignore
  */
@@ -327,8 +361,8 @@ export const getFirstKey = (dict) => {
 export const getTypicalChromeExecutablePath = () => {
     switch (os.platform()) {
         case 'darwin': return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-        case 'win32': return 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe';
-        default: return 'google-chrome';
+        case 'win32': return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+        default: return '/usr/bin/google-chrome';
     }
 };
 
@@ -336,27 +370,22 @@ export const getTypicalChromeExecutablePath = () => {
  * Wraps the provided Promise with another one that rejects with the given errorMessage
  * after the given timeoutMillis, unless the original promise resolves or rejects earlier.
  *
- * @param {Promise<object>} promise
+ * @param {Promise<*>} promise
  * @param {number} timeoutMillis
  * @param {string} errorMessage
- * @return {Promise<object>}
+ * @return {Promise<*>}
  * @ignore
  */
 export const addTimeoutToPromise = (promise, timeoutMillis, errorMessage) => {
-    return new Promise(async (resolve, reject) => {
-        if (!isPromise(promise)) throw new Error('Parameter promise of type Promise must be provided.');
-        checkParamOrThrow(timeoutMillis, 'timeoutMillis', 'Number');
-        checkParamOrThrow(errorMessage, 'errorMessage', 'String');
-
+    return new Promise((resolve, reject) => {
+        ow(promise, ow.promise);
+        ow(timeoutMillis, ow.number);
+        ow(errorMessage, ow.string);
         const timeout = setTimeout(() => reject(new Error(errorMessage)), timeoutMillis);
-        try {
-            const data = await promise;
-            resolve(data);
-        } catch (err) {
-            reject(err);
-        } finally {
-            clearTimeout(timeout);
-        }
+        promise
+            .then(resolve)
+            .catch(reject)
+            .finally(() => clearTimeout(timeout));
     });
 };
 
@@ -392,14 +421,14 @@ export const isAtHome = () => !!process.env[ENV_VARS.IS_AT_HOME];
  * @return {Promise<void>}
  */
 export const sleep = (millis) => {
-    return new Promise(res => setTimeout(res, millis));
+    return new Promise((res) => setTimeout(res, millis));
 };
 
 /**
  * Returns a promise that resolves to an array of urls parsed from the resource available at the provided url.
  * Optionally, custom regular expression and encoding may be provided.
  *
- * @param {Object} options
+ * @param {object} options
  * @param {string} options.url URL to the file
  * @param {string} [options.encoding='utf8'] The encoding of the file.
  * @param {RegExp} [options.urlRegExp=URL_NO_COMMAS_REGEX]
@@ -408,95 +437,36 @@ export const sleep = (millis) => {
  * @returns {Promise<Array<string>>}
  * @memberOf utils
  */
-const downloadListOfUrls = async ({ url, encoding = 'utf8', urlRegExp = URL_NO_COMMAS_REGEX }) => {
-    checkParamOrThrow(url, 'url', 'String');
-    checkParamOrThrow(encoding, 'string', 'String');
-    checkParamOrThrow(urlRegExp, 'urlRegExp', 'RegExp');
+const downloadListOfUrls = async (options) => {
+    ow(options, ow.object.exactShape({
+        url: ow.string.url,
+        encoding: ow.optional.string,
+        urlRegExp: ow.optional.regExp,
+    }));
+    const { url, encoding = 'utf8', urlRegExp = URL_NO_COMMAS_REGEX } = options;
 
-    const string = await requestPromise.get({ url, encoding });
+    const { requestAsBrowser } = requestUtils;
+
+    const { body: string } = await requestAsBrowser({ url, encoding });
     return extractUrls({ string, urlRegExp });
 };
 
 /**
  * Collects all URLs in an arbitrary string to an array, optionally using a custom regular expression.
- * @param {Object} options
+ * @param {object} options
  * @param {string} options.string
  * @param {RegExp} [options.urlRegExp=Apify.utils.URL_NO_COMMAS_REGEX]
  * @returns {string[]}
  * @memberOf utils
  */
-const extractUrls = ({ string, urlRegExp = URL_NO_COMMAS_REGEX }) => {
-    checkParamOrThrow(string, 'string', 'String');
-    checkParamOrThrow(urlRegExp, 'urlRegExp', 'RegExp');
+const extractUrls = (options) => {
+    ow(options, ow.object.exactShape({
+        string: ow.string,
+        urlRegExp: ow.optional.regExp,
+    }));
+    const { string, urlRegExp = URL_NO_COMMAS_REGEX } = options;
     return string.match(urlRegExp) || [];
 };
-
-/**
- * Returns a randomly selected User-Agent header out of a list of the most common headers.
- * @returns {string}
- * @memberOf utils
- */
-const getRandomUserAgent = () => {
-    const index = getRandomInt(USER_AGENT_LIST.length);
-    return USER_AGENT_LIST[index];
-};
-
-/**
- * Helper function to open local storage.
- *
- * @ignore
- */
-export const openLocalStorage = async (idOrName, defaultIdEnvVar, LocalClass, cache) => {
-    const localStorageDir = process.env[ENV_VARS.LOCAL_STORAGE_DIR] || LOCAL_ENV_VARS[ENV_VARS.LOCAL_STORAGE_DIR];
-
-    if (!idOrName) idOrName = process.env[defaultIdEnvVar] || LOCAL_ENV_VARS[defaultIdEnvVar];
-
-    let storagePromise = cache.get(idOrName);
-
-    if (!storagePromise) {
-        storagePromise = Promise.resolve(new LocalClass(idOrName, localStorageDir));
-        cache.add(idOrName, storagePromise);
-    }
-
-    return storagePromise;
-};
-
-/**
- * Helper function to open remote storage.
- *
- * @ignore
- */
-export const openRemoteStorage = async (idOrName, defaultIdEnvVar, RemoteClass, cache, getOrCreateFunction) => {
-    let isDefault = false;
-
-    if (!idOrName) {
-        isDefault = true;
-        idOrName = process.env[defaultIdEnvVar];
-        if (!idOrName) throw new Error(`The '${defaultIdEnvVar}' environment variable is not defined.`);
-    }
-
-    let storagePromise = cache.get(idOrName);
-
-    if (!storagePromise) {
-        storagePromise = isDefault // If true then we know that this is an ID of existing store.
-            ? Promise.resolve(new RemoteClass(idOrName))
-            : getOrCreateFunction(idOrName).then(storage => (new RemoteClass(storage.id, storage.name)));
-        cache.add(idOrName, storagePromise);
-    }
-
-    return storagePromise;
-};
-
-/**
- * Checks if at least one of APIFY_LOCAL_STORAGE_DIR and APIFY_TOKEN environment variables is set.
- * @ignore
- */
-export const ensureTokenOrLocalStorageEnvExists = (storageName) => {
-    if (!process.env[ENV_VARS.LOCAL_STORAGE_DIR] && !process.env[ENV_VARS.TOKEN]) {
-        throw new Error(`Cannot use ${storageName} as neither ${ENV_VARS.LOCAL_STORAGE_DIR} nor ${ENV_VARS.TOKEN} environment variable is set. You need to set one these variables in order to enable data storage.`); // eslint-disable-line max-len
-    }
-};
-
 
 // NOTE: We skipping 'noscript' since it's content is evaluated as text, instead of HTML elements. That damages the results.
 const SKIP_TAGS_REGEX = /^(script|style|canvas|svg|noscript)$/i;
@@ -527,7 +497,7 @@ const BLOCK_TAGS_REGEX = /^(p|h1|h2|h3|h4|h5|h6|ol|ul|li|pre|address|blockquote|
  * const html = '<html><body>Some text</body></html>';
  * const text = htmlToText(cheerio.load(html, { decodeEntities: true }));
  * ```
- * @param {(string|CheerioStatic)} html HTML text or parsed HTML represented using a
+ * @param {(string|cheerio.Root)} html HTML text or parsed HTML represented using a
  * [cheerio](https://www.npmjs.com/package/cheerio) function.
  * @return {string} Plain text
  * @memberOf utils
@@ -542,7 +512,7 @@ const htmlToText = (html) => {
     //  produces really text with a lot of HTML elements in it. Let's just deprecate this sort of usage,
     //  and make the parameter "htmlOrCheerioElement"
     /**
-     * @type {CheerioStatic}
+     * @type {cheerio.Root}
      * @ignore
      */
     const $ = typeof html === 'function' ? html : cheerio.load(html, { decodeEntities: true });
@@ -588,31 +558,29 @@ const htmlToText = (html) => {
  * Creates a standardized debug info from request and response. This info is usually added to dataset under the hidden `#debug` field.
  *
  * @param {(Request|RequestOptions)} request [Apify.Request](https://sdk.apify.com/docs/api/request) object.
- * @param {(IncomingMessage|PuppeteerResponse)} [response]
+ * @param {(*|IncomingMessage|PuppeteerResponse)} [response]
  *   Puppeteer [`Response`](https://pptr.dev/#?product=Puppeteer&version=v1.11.0&show=api-class-response)
  *   or NodeJS [`http.IncomingMessage`](https://nodejs.org/api/http.html#http_class_http_serverresponse).
- * @param {Object} [additionalFields] Object containing additional fields to be added.
+ * @param {Object<string, *>} [additionalFields] Object containing additional fields to be added.
 
- * @return {object}
+ * @return {Object<string, *>}
  */
 const createRequestDebugInfo = (request, response = {}, additionalFields = {}) => {
-    checkParamOrThrow(request, 'request', 'Object');
-    checkParamOrThrow(response, 'response', 'Object');
-    checkParamOrThrow(additionalFields, 'additionalFields', 'Object');
+    ow(request, ow.object);
+    ow(response, ow.object);
+    ow(additionalFields, ow.object);
 
-    return Object.assign(
-        {
-            requestId: request.id,
-            url: request.url,
-            loadedUrl: request.loadedUrl,
-            method: request.method,
-            retryCount: request.retryCount,
-            errorMessages: request.errorMessages,
-            // Puppeteer response has .status() funtion and NodeJS response ,statusCode property.
-            statusCode: _.isFunction(response.status) ? response.status() : response.statusCode,
-        },
-        additionalFields,
-    );
+    return {
+        requestId: request.id,
+        url: request.url,
+        loadedUrl: request.loadedUrl,
+        method: request.method,
+        retryCount: request.retryCount,
+        errorMessages: request.errorMessages,
+        // Puppeteer response has .status() funtion and NodeJS response ,statusCode property.
+        statusCode: _.isFunction(response.status) ? response.status() : response.statusCode,
+        ...additionalFields,
+    };
 };
 
 /**
@@ -640,6 +608,7 @@ export const snakeCaseToCamelCase = (snakeCaseStr) => {
  * @ignore
  */
 export const printOutdatedSdkWarning = () => {
+    if (process.env[DISABLE_OUTDATED_WARNING]) return;
     const latestApifyVersion = process.env[ENV_VARS.SDK_LATEST_VERSION];
     if (!latestApifyVersion || !semver.lt(apifyVersion, latestApifyVersion)) return;
 
@@ -655,9 +624,10 @@ export const printOutdatedSdkWarning = () => {
  * @ignore
  */
 export const parseContentTypeFromResponse = (response) => {
-    checkParamOrThrow(response, 'response', 'Object');
-    checkParamOrThrow(response.url, 'response.url', 'String');
-    checkParamOrThrow(response.headers, 'response.headers', 'Object');
+    ow(response, ow.object.partialShape({
+        url: ow.string.url,
+        headers: ow.object,
+    }));
 
     const { url, headers } = response;
     let parsedContentType;
@@ -685,6 +655,73 @@ export const parseContentTypeFromResponse = (response) => {
 };
 
 /**
+ * Returns a promise that resolves with the finished Run object when the provided actor run finishes
+ * or with the unfinished Run object when the `waitSecs` timeout lapses. The promise is NOT rejected
+ * based on run status. You can inspect the `status` property of the Run object to find out its status.
+ *
+ * This is useful when you need to chain actor executions. Similar effect can be achieved
+ * by using webhooks, so be sure to review which technique fits your use-case better.
+ *
+ * @param {object} options
+ * @param {string} options.actorId
+ *  ID of the actor that started the run.
+ * @param {string} options.runId
+ *  ID of the run itself.
+ * @param {string} [options.waitSecs]
+ *  Maximum time to wait for the run to finish, in seconds.
+ *  If the limit is reached, the returned promise is resolved to a run object that will have
+ *  status `READY` or `RUNNING`. If `waitSecs` omitted, the function waits indefinitely.
+ * @param {string} [options.token]
+ *  You can supply an Apify token to override the default one
+ *  that's used by the default ApifyClient instance.
+ *  E.g. you can track other users' runs.
+ * @returns {Promise<ActorRun>}
+ * @memberOf utils
+ * @name waitForRunToFinish
+ * @function
+ */
+export const waitForRunToFinish = async (options) => {
+    ow(options, ow.object.exactShape({
+        actorId: ow.string,
+        runId: ow.string,
+        waitSecs: ow.optional.number,
+    }));
+
+    const {
+        actorId,
+        runId,
+        waitSecs,
+    } = options;
+    let run;
+
+    const startedAt = Date.now();
+    const shouldRepeat = () => {
+        if (waitSecs && (Date.now() - startedAt) / 1000 >= waitSecs) return false;
+        if (run && ACT_JOB_TERMINAL_STATUSES.includes(run.status)) return false;
+
+        return true;
+    };
+
+    while (shouldRepeat()) {
+        const waitForFinish = waitSecs
+            ? Math.round(waitSecs - (Date.now() - startedAt) / 1000)
+            : 999999;
+
+        run = await apifyClient.run(runId, actorId).waitForFinish({ waitForFinish }); // TODO waitForFinish
+
+        // It might take some time for database replicas to get up-to-date,
+        // so getRun() might return null. Wait a little bit and try it again.
+        if (!run) await sleep(250);
+    }
+
+    if (!run) {
+        throw new Error('Waiting for run to finish failed. Cannot fetch actor run details from the server.');
+    }
+
+    return run;
+};
+
+/**
  * A namespace that contains various utilities.
  *
  * **Example usage:**
@@ -704,10 +741,9 @@ export const publicUtils = {
     sleep,
     downloadListOfUrls,
     extractUrls,
-    getRandomUserAgent,
     htmlToText,
     URL_NO_COMMAS_REGEX,
     URL_WITH_COMMAS_REGEX,
     createRequestDebugInfo,
-    parseContentTypeFromResponse,
+    waitForRunToFinish,
 };

@@ -1,8 +1,7 @@
+import ow from 'ow';
 import { URL } from 'url';
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import { checkParamPrototypeOrThrow } from 'apify-shared/utilities';
 import log from '../utils_log';
-import { RequestQueue, RequestQueueLocal, QueueOperationInfo } from '../request_queue'; // eslint-disable-line import/named,no-unused-vars
+import { RequestQueue, RequestQueueLocal, QueueOperationInfo } from '../storages/request_queue'; // eslint-disable-line import/named,no-unused-vars
 import { addInterceptRequestHandler, removeInterceptRequestHandler } from '../puppeteer_request_interception';
 /* eslint-disable import/named,no-unused-vars,import/order */
 import { Page, Request as PuppeteerRequest, Target } from 'puppeteer';
@@ -45,13 +44,7 @@ const STARTING_Z_INDEX = 2147400000;
  * **Example usage**
  *
  * ```javascript
- * const Apify = require('apify');
- *
- * const browser = await Apify.launchPuppeteer();
- * const page = await browser.goto('https://www.example.com');
- * const requestQueue = await Apify.openRequestQueue();
- *
- * await Apify.utils.enqueueLinksByClickingElements({
+ * await Apify.utils.puppeteer.enqueueLinksByClickingElements({
  *   page,
  *   requestQueue,
  *   selector: 'a.product-detail',
@@ -61,7 +54,7 @@ const STARTING_Z_INDEX = 2147400000;
  *   ],
  * });
  * ```
- * @param {Object} options
+ * @param {object} options
  *   All `enqueueLinksByClickingElements()` parameters are passed
  *   via an options object with the following keys:
  * @param {Page} options.page
@@ -71,7 +64,7 @@ const STARTING_Z_INDEX = 2147400000;
  * @param {string} options.selector
  *   A CSS selector matching elements to be clicked on. Unlike in {@link utils#enqueueLinks}, there is no default
  *   value. This is to prevent suboptimal use of this function by using it too broadly.
- * @param {Array<(string|RegExp|Object)>} [options.pseudoUrls]
+ * @param {Array<(string|RegExp|Object<string, *>)>} [options.pseudoUrls]
  *   An array of {@link PseudoUrl}s matching the URLs to be enqueued,
  *   or an array of strings or RegExps or plain Objects from which the {@link PseudoUrl}s can be constructed.
  *
@@ -124,7 +117,17 @@ const STARTING_Z_INDEX = 2147400000;
  * @name enqueueLinksByClickingElements
  * @function
  */
-export async function enqueueLinksByClickingElements(options = {}) {
+export async function enqueueLinksByClickingElements(options) {
+    ow(options, ow.object.exactShape({
+        page: ow.object.hasKeys('goto', 'evaluate'),
+        requestQueue: ow.object.hasKeys('fetchNextRequest', 'addRequest'),
+        selector: ow.string,
+        pseudoUrls: ow.optional.array.ofType(ow.any(ow.string, ow.regExp, ow.object.hasKeys('purl'))),
+        transformRequestFunction: ow.optional.function,
+        waitForPageIdleSecs: ow.optional.number,
+        maxWaitForPageIdleSecs: ow.optional.number,
+    }));
+
     const {
         page,
         requestQueue,
@@ -134,14 +137,6 @@ export async function enqueueLinksByClickingElements(options = {}) {
         waitForPageIdleSecs = 1,
         maxWaitForPageIdleSecs = 5,
     } = options;
-
-    checkParamOrThrow(page, 'page', 'Object');
-    checkParamOrThrow(selector, 'selector', 'String');
-    checkParamPrototypeOrThrow(requestQueue, 'requestQueue', [RequestQueue, RequestQueueLocal], 'Apify.RequestQueue');
-    checkParamOrThrow(pseudoUrls, 'pseudoUrls', 'Maybe Array');
-    checkParamOrThrow(transformRequestFunction, 'transformRequestFunction', 'Function');
-    checkParamOrThrow(waitForPageIdleSecs, 'waitForPageIdleSecs', 'Number');
-    checkParamOrThrow(maxWaitForPageIdleSecs, 'maxWaitForPageIdleSecs', 'Number');
 
     const waitForPageIdleMillis = waitForPageIdleSecs * 1000;
     const maxWaitForPageIdleMillis = maxWaitForPageIdleSecs * 1000;
@@ -155,7 +150,7 @@ export async function enqueueLinksByClickingElements(options = {}) {
     });
     let requestOptions = createRequestOptions(interceptedRequests);
     if (transformRequestFunction) {
-        requestOptions = requestOptions.map(transformRequestFunction).filter(r => !!r);
+        requestOptions = requestOptions.map(transformRequestFunction).filter((r) => !!r);
     }
     const requests = createRequests(requestOptions, pseudoUrlInstances);
     return addRequestsToQueueInBatches(requests, requestQueue);
@@ -166,10 +161,12 @@ export async function enqueueLinksByClickingElements(options = {}) {
  * Catches and intercepts all initiated navigation requests and opened pages.
  * Returns a list of all target URLs.
  *
- * @param {Object} options
+ * @param {object} options
  * @param {Page} options.page
  * @param {string} options.selector
- * @return {Promise<Array<object>>}
+ * @param {number} [options.waitForPageIdleMillis]
+ * @param {number} [options.maxWaitForPageIdleMillis]
+ * @return {Promise<Array<*>>}
  * @ignore
  */
 export async function clickElementsAndInterceptNavigationRequests(options) {
@@ -203,7 +200,7 @@ export async function clickElementsAndInterceptNavigationRequests(options) {
     await removeInterceptRequestHandler(page, onInterceptedRequest);
 
     const serializedRequests = Array.from(uniqueRequests);
-    return serializedRequests.map(r => JSON.parse(r));
+    return serializedRequests.map((r) => JSON.parse(r));
 }
 
 /**

@@ -4,16 +4,16 @@
 // instead of 'apify-shared/log'
 
 /**
- * @typedef {Object} LoggerOptions
+ * @typedef {object} LoggerOptions
  * @property {number} [level=4] Sets the log level to the given value, preventing messages from less important log levels
  * from being printed to the console. Use in conjunction with the `log.LEVELS` constants.
  * @property {number} [maxDepth=4] Max depth of data object that will be logged. Anything deeper than the limit will be stripped off.
  * @property {number} [maxStringLength=2000] Max length of the string to be logged. Longer strings will be truncated.
  * @property {string} [prefix] Prefix to be prepended the each logged line.
  * @property {string} [suffix] Suffix that will be appended the each logged line.
- * @property {Object} [logger] Logger implementation to be used. Default one is log.LoggerText to log messages as easily readable
+ * @property {object} [logger] Logger implementation to be used. Default one is log.LoggerText to log messages as easily readable
  * strings. Optionally you can use `log.LoggerJson` that formats each log line as a JSON.
- * @property {Object} [data] Additional data to be added to each log line.
+ * @property {object} [data] Additional data to be added to each log line.
  */
 
 /**
@@ -36,7 +36,7 @@
  * `DEBUG` messages will not be printed, unless enabled.
  *
  * **Example:**
- * ```
+ * ```js
  * const Apify = require('apify');
  * const { log } = Apify.utils;
  *
@@ -67,6 +67,16 @@
  * Another very useful way of setting the log level is by setting the `APIFY_LOG_LEVEL`
  * environment variable, such as `APIFY_LOG_LEVEL=DEBUG`. This way, no code changes
  * are necessary to turn on your debug messages and start debugging right away.
+ *
+ * To add timestamps to your logs, you can override the default logger settings:
+ * ```js
+ * log.setOptions({
+ *     logger: new log.LoggerText({ skipTime: false }),
+ * });
+ * ```
+ * You can customize your logging further by extending or replacing the default
+ * logger instances with your own implementations.
+ *
  * @namespace log
  */
 
@@ -134,7 +144,7 @@
  * to the message.
  * @name debug
  * @param {string} message
- * @param {Object} [data]
+ * @param {object} [data]
  * @method
  * @memberOf log
  */
@@ -144,7 +154,7 @@
  * unless the log level is changed. Data are stringified and appended to the message.
  * @name info
  * @param {string} message
- * @param {Object} [data]
+ * @param {object} [data]
  * @method
  * @memberOf log
  */
@@ -153,7 +163,7 @@
  * Logs a `WARNING` level message. Data are stringified and appended to the message.
  * @name warning
  * @param {string} message
- * @param {Object} [data]
+ * @param {object} [data]
  * @method
  * @memberOf log
  */
@@ -163,7 +173,7 @@
  * to an exception. For logging exceptions, use the `log.exception` method.
  * @name error
  * @param {string} message
- * @param {Object} [data]
+ * @param {object} [data]
  * @method
  * @memberOf log
  */
@@ -174,7 +184,7 @@
  * @name exception
  * @param {Error} exception
  * @param {string} [message]
- * @param {Object} [data]
+ * @param {object} [data]
  * @method
  * @memberOf log
  */

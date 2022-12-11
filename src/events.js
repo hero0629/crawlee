@@ -1,8 +1,8 @@
 import { EventEmitter } from 'events';
 import * as WebSocket from 'ws';
 import { ENV_VARS, ACTOR_EVENT_NAMES } from 'apify-shared/consts';
-import log from './utils_log';
 import { ACTOR_EVENT_NAMES_EX } from './constants';
+import defaultLog from './utils_log';
 
 // NOTE: This value is mentioned below in docs, if you update it here, update it there too.
 const PERSIST_STATE_INTERVAL_MILLIS = 60 * 1000;
@@ -15,12 +15,14 @@ const events = new EventEmitter();
 
 /**
  * Websocket connection to actor events.
+ * @type {*}
  * @ignore
  */
 let eventsWs = null;
 
 /**
  * Interval that emits persist state events.
+ * @type {*}
  * @ignore
  */
 let persistStateInterval = null;
@@ -39,54 +41,24 @@ let persistStateInterval = null;
  * });
  * ```
  *
- * The following table shows all currently emitted events:
- * <table>
- *     <thead>
- *         <tr>
- *             <th>Event name</th>
- *             <th>Data</th>
- *     </thead>
- *     <tbody>
- *         <tr>
- *             <td><code>cpuInfo</code></td>
- *             <td><code>{ "isCpuOverloaded": Boolean }</code></td>
- *         </tr>
- *         <tr>
- *             <td colspan="2">
- *                 The event is emitted approximately every second
- *                 and it indicates whether the actor is using the maximum of available CPU resources.
- *                 If that's the case, the actor should not add more workload.
- *                 For example, this event is used by the {@link AutoscaledPool} class.
- *             </td>
- *         </tr>
- *         <tr>
- *             <td><code>migrating</code></td>
- *             <td>None</td>
- *         </tr>
- *         <tr>
- *             <td colspan="2">
- *                 Emitted when the actor running on the Apify platform is going to be migrated to another worker server soon.
- *                 You can use it to persist the state of the actor and abort the run, to speed up migration.
- *                 For example, this is used by the {@link RequestList} class.
- *             </td>
- *         </tr>
- *         <tr>
- *             <td><code>persistState</code></td>
- *             <td><code>{ "isMigrating": Boolean }</code></td>
- *         </tr>
- *         <tr>
- *             <td colspan="2">
- *                 Emitted in regular intervals (by default 60 seconds) to notify all components of Apify SDK that it is time to persist
- *                 their state, in order to avoid repeating all work when the actor restarts.
- *                 This event is automatically emitted together with the <code>migrating</code> event,
- *                 in which case the <code>isMigrating</code> flag is set to <code>true</code>. Otherwise the flag is <code>false</code>.
- *                 <br><br>
- *                 Note that the <code>persistState</code> event is provided merely for user convenience,
- *                 you can achieve the same effect using <code>setInterval()</code> and listening for the <code>migrating</code> event.
- *             </td>
- *         </tr>
- *     </tbody>
- * </table>
+ * The following events are emitted:
+ *
+ * - `cpuInfo`: `{ "isCpuOverloaded": Boolean }`
+ *   The event is emitted approximately every second
+ *   and it indicates whether the actor is using the maximum of available CPU resources.
+ *   If that's the case, the actor should not add more workload.
+ *   For example, this event is used by the {@link AutoscaledPool} class.
+ * - `migrating`: `void`
+ *   Emitted when the actor running on the Apify platform is going to be migrated to another worker server soon.
+ *   You can use it to persist the state of the actor and abort the run, to speed up migration.
+ *   For example, this is used by the {@link RequestList} class.
+ * - `persistState`: `{ "isMigrating": Boolean }`
+ *   Emitted in regular intervals (by default 60 seconds) to notify all components of Apify SDK that it is time to persist
+ *   their state, in order to avoid repeating all work when the actor restarts.
+ *   This event is automatically emitted together with the `migrating` event,
+ *   in which case the `isMigrating` flag is set to `true`. Otherwise the flag is `false`.
+ *   Note that the `persistState` event is provided merely for user convenience,
+ *   you can achieve the same effect using `setInterval()` and listening for the `migrating` event.
  *
  * @memberof module:Apify
  * @name events
@@ -115,6 +87,8 @@ const emitPersistStateEvent = (isMigrating = false) => {
 export const initializeEvents = () => {
     if (eventsWs) return;
 
+    const log = defaultLog.child({ prefix: 'Events' });
+
     if (!persistStateInterval) {
         // This is overridable only to enable unit testing.
         const intervalMillis = process.env.APIFY_TEST_PERSIST_INTERVAL_MILLIS || PERSIST_STATE_INTERVAL_MILLIS;
@@ -125,7 +99,7 @@ export const initializeEvents = () => {
 
     // Locally there is no web socket to connect, so just print a log message.
     if (!eventsWsUrl) {
-        log.debug(`Apify.events: Environment variable ${ENV_VARS.ACTOR_EVENTS_WS_URL} is not set, no events from Apify platform will be emitted.`);
+        log.debug(`Environment variable ${ENV_VARS.ACTOR_EVENTS_WS_URL} is not set, no events from Apify platform will be emitted.`);
         return;
     }
 
@@ -143,17 +117,17 @@ export const initializeEvents = () => {
                 emitPersistStateEvent(true);
             }
         } catch (err) {
-            log.exception(err, 'Apify.events: Cannot parse actor event');
+            log.exception(err, 'Cannot parse actor event');
         }
     });
     eventsWs.on('error', (err) => {
         // Don't print this error as this happens in the case of very short Apify.main().
         if (err.message === 'WebSocket was closed before the connection was established') return;
 
-        log.exception(err, 'Apify.events: web socket connection failed');
+        log.exception(err, 'web socket connection failed');
     });
     eventsWs.on('close', () => {
-        log.warning('Apify.events: web socket has been closed');
+        log.warning('web socket has been closed');
         eventsWs = null;
     });
 };

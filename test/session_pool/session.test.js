@@ -1,11 +1,10 @@
 import { Session } from '../../build/session_pool/session';
 import { SessionPool } from '../../build/session_pool/session_pool';
+import { ProxyConfiguration } from '../../build/proxy_configuration';
 import EVENTS from '../../build/session_pool/events';
 import { STATUS_CODES_BLOCKED } from '../../build/constants';
 
 import Apify from '../../build';
-import { getApifyProxyUrl } from '../../build/actor';
-
 
 describe('Session - testing session behaviour ', () => {
     let sessionPool;
@@ -27,19 +26,16 @@ describe('Session - testing session behaviour ', () => {
         expect(session.errorScore).toBe(0.5);
     });
 
-    test(
-        'should throw error when param sessionPool is not EventEmitter instance',
-        () => {
-            let err;
-            try {
+    test('should throw error when param sessionPool is not EventEmitter instance', () => {
+        let err;
+        try {
                 const session = new Session({ sessionPool: {} }); // eslint-disable-line
-            } catch (e) {
-                err = e;
-            }
-            expect(err).toBeDefined(); // eslint-disable-line
-            expect(err.message.includes('Session: sessionPool must be instance of SessionPool')).toBe(true); // eslint-disable-line
-        },
-    );
+        } catch (e) {
+            err = e;
+        }
+        expect(err).toBeDefined(); // eslint-disable-line
+        expect(err.message.includes('object `sessionPool` `{}` to be of type `SessionPool`')).toBe(true); // eslint-disable-line
+    });
 
     test('should mark session markBad', () => {
         session.markBad();
@@ -95,6 +91,36 @@ describe('Session - testing session behaviour ', () => {
         expect(session.usageCount).toBe(1);
     });
 
+    test('should retire session after marking bad', () => {
+        jest.spyOn(session, '_maybeSelfRetire');
+        jest.spyOn(session, 'retire');
+        session.markBad();
+        expect(session.retire).toBeCalledTimes(0);
+        session.isUsable = () => false;
+        session.markBad();
+        expect(session.retire).toBeCalledTimes(1);
+    });
+
+    test('should retire session after marking good', () => {
+        jest.spyOn(session, '_maybeSelfRetire');
+        jest.spyOn(session, 'retire');
+
+        session.markGood();
+        expect(session.retire).toBeCalledTimes(0);
+
+        session.isUsable = () => false;
+        session.markGood();
+        expect(session.retire).toBeCalledTimes(1);
+    });
+
+    test('should reevaluate usability of session after marking the session', () => {
+        jest.spyOn(session, '_maybeSelfRetire');
+        session.markGood();
+        expect(session._maybeSelfRetire).toBeCalledTimes(1); // eslint-disable-line
+        session.markBad();
+        expect(session._maybeSelfRetire).toBeCalledTimes(2); // eslint-disable-line
+    });
+
     test('should get state', () => {
         const state = session.getState();
 
@@ -108,7 +134,6 @@ describe('Session - testing session behaviour ', () => {
         expect(state.usageCount).toBeDefined();
         expect(state.errorScore).toBeDefined();
 
-
         Object.entries(state).forEach(([key, value]) => {
             if (session[key] instanceof Date) {
                 expect(session[key].toISOString()).toEqual(value);
@@ -121,10 +146,11 @@ describe('Session - testing session behaviour ', () => {
     });
 
     test('should be valid proxy session', () => {
+        const proxyConfiguration = new ProxyConfiguration({ password: '12312' });
         session = new Session({ sessionPool });
         let error;
         try {
-            getApifyProxyUrl({ session: session.id, password: '12312' });
+            proxyConfiguration.newUrl(session.id);
         } catch (e) {
             error = e;
         }
@@ -174,6 +200,29 @@ describe('Session - testing session behaviour ', () => {
         session = new Session({ sessionPool });
         session.setPuppeteerCookies(cookies, url);
         expect(session.getCookieString(url)).toBe('cookie1=my-cookie; cookie2=your-cookie');
+    });
+
+    test('setPuppeteerCookies should work for session (with expiration date: -1) cookies', () => {
+        const url = 'https://example.com';
+        const cookies = [
+            { name: 'session_cookie', value: 'session-cookie-value', expires: -1 },
+        ];
+
+        session = new Session({ sessionPool });
+        session.setPuppeteerCookies(cookies, url);
+        expect(session.getCookieString(url)).toBe('session_cookie=session-cookie-value');
+    });
+
+    test('setPuppeteerCookies works with leading dots in domains', () => {
+        const url = 'https://www.example.com';
+        const cookies = [
+            { name: 'cookie1', value: 'my-cookie', domain: 'abc.example.com' },
+            { name: 'cookie2', value: 'your-cookie', domain: '.example.com' },
+        ];
+
+        session = new Session({ sessionPool });
+        session.setPuppeteerCookies(cookies, url);
+        expect(session.getCookieString(url)).toBe('cookie2=your-cookie');
     });
 
     describe('.putResponse & .getCookieString', () => {

@@ -21,10 +21,13 @@ describe('CheerioCrawler TS', () => {
             testInputs = {
                 $: cheerio.load(body),
                 body: body,
-                request: new Apify.Request({url: '#'}),
+                json: null as any,
+                proxyInfo: null as any,
+                session: null as any,
+                request: new Apify.Request({url: ' http://www.test1234.com'}),
                 contentType: {type: 'text/html', encoding: 'utf-8'},
                 response: null as any,
-                autoscaledPool: null as any
+                crawler: null as any
             };
         });
 
@@ -47,7 +50,7 @@ describe('CheerioCrawler TS', () => {
         test('Can pass around and call `handler({ var }: { var: Type})`', async () => {
             // This form can also be easily reused as above.
             // Auto-completion works on defined input variables in parameter list.
-            const y = async ({$}: { $?: CheerioSelector }) => {
+            const y = async ({$}: { $?: cheerio.Selector }) => {
                 expect($!('a').attr('href')).toEqual('#');
             };
 

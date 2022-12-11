@@ -1,18 +1,5 @@
 /* istanbul ignore file */
 
-const hideWebDriver = () => {
-    Object.defineProperty(window, 'navigator', {
-        value: new Proxy(navigator, {
-            has: (target, key) => (key === 'webdriver' ? false : key in target),
-            get: (target, key) => (key === 'webdriver' // eslint-disable-line
-                ? undefined
-                : typeof target[key] === 'function'
-                    ? target[key].bind(target)
-                    : target[key]),
-        }),
-    });
-};
-
 const hackPermissions = () => {
     const originalQuery = window.navigator.permissions.query;
     // eslint-disable-next-line
@@ -48,7 +35,7 @@ const hackPermissions = () => {
 };
 
 const addLanguage = () => {
-    Object.defineProperty(window.navigator, 'languages', {
+    Object.defineProperty(Object.getPrototypeOf(navigator), 'languages', {
         get: () => ['en-US', 'en'],
     });
 };
@@ -74,16 +61,12 @@ const emulateWebGL = () => {
 };
 
 const emulateWindowFrame = () => {
-    try {
-        if (window.outerWidth && window.outerHeight) {
-            return; // nothing to do here
-        }
-        const windowFrame = 85; // probably OS and WM dependent
-        window.outerWidth = window.innerWidth;
-        window.outerHeight = window.innerHeight + windowFrame;
-    } catch (err) {
-        console.error('hiding_tricks: Could not emulate window frame');
+    if (window.outerWidth && window.outerHeight) {
+        return; // nothing to do here
     }
+    const windowFrame = 85; // probably OS and WM dependent
+    window.outerWidth = window.innerWidth;
+    window.outerHeight = window.innerHeight + windowFrame;
 };
 
 const addPlugins = () => {
@@ -208,8 +191,8 @@ const addPlugins = () => {
 
         function generateMimeTypeArray() {
             const arr = fakeData.mimeTypes
-                .map(obj => getSubset(['type', 'suffixes', 'description'], obj))
-                .map(obj => Object.setPrototypeOf(obj, MimeType.prototype));
+                .map((obj) => getSubset(['type', 'suffixes', 'description'], obj))
+                .map((obj) => Object.setPrototypeOf(obj, MimeType.prototype));
             arr.forEach((obj) => {
                 arr[obj.type] = obj;
             });
@@ -228,7 +211,7 @@ const addPlugins = () => {
 
         function generatePluginArray() {
             const arr = fakeData.plugins
-                .map(obj => getSubset(['name', 'filename', 'description'], obj))
+                .map((obj) => getSubset(['name', 'filename', 'description'], obj))
                 .map((obj) => {
                     const mimes = fakeData.mimeTypes.filter(
                         m => m.__pluginName === obj.name, // eslint-disable-line
@@ -248,7 +231,7 @@ const addPlugins = () => {
                     obj.item = fakeData.fns.item('Plugin');
                     return obj;
                 })
-                .map(obj => Object.setPrototypeOf(obj, window.Plugin.prototype));
+                .map((obj) => Object.setPrototypeOf(obj, window.Plugin.prototype));
             arr.forEach((obj) => {
                 arr[obj.name] = obj;
             });
@@ -285,11 +268,13 @@ const emulateConsoleDebug = () => {
 
 // Should be mocked more properly - this one will bypass only some stupid tests
 const mockChrome = () => {
-    Object.defineProperty(window, 'chrome', {
-        value: {
-            runtime: {},
-        },
-    });
+    if (!window.chrome) {
+        Object.defineProperty(window, 'chrome', {
+            value: {
+                runtime: {},
+            },
+        });
+    }
 };
 
 // not sure if this hack does not broke iframe on websites... Should figure out how to test properly
@@ -359,7 +344,6 @@ export default {
     emulateWebGL,
     emulateConsoleDebug,
     addLanguage,
-    hideWebDriver,
     hackPermissions,
     mockChrome,
     mockChromeInIframe,

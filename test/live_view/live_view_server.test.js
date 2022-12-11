@@ -1,18 +1,16 @@
 import path from 'path';
 import { promisify } from 'util';
-import rqst from 'request-promise-native';
 import fs from 'fs-extra';
 import io from 'socket.io-client';
 import { ENV_VARS, LOCAL_ENV_VARS } from 'apify-shared/consts';
 import Apify from '../../build/index';
-import { LOCAL_STORAGE_DIR } from '../_helper';
 import LiveViewServer from '../../build/live_view/live_view_server';
+import { requestAsBrowser } from '../../build/utils_request';
+import LocalStorageDirEmulator from '../local_storage_dir_emulator';
 
 const { utils: { log } } = Apify;
-const emptyDir = promisify(fs.emptyDir);
 const readdir = promisify(fs.readdir);
 
-const LOCAL_STORAGE_SUBDIR = path.join(LOCAL_STORAGE_DIR, 'live_view');
 const PORT = LOCAL_ENV_VARS[ENV_VARS.CONTAINER_PORT];
 const BASE_URL = `http://localhost:${PORT}`;
 
@@ -34,19 +32,26 @@ describe('LiveViewServer', () => {
         content: async () => 'content',
         screenshot: async () => `screenshot${count++}`,
     };
-    beforeEach(() => {
+    let localStorageDirEmulator;
+    let localStorageSubDir;
+
+    beforeAll(() => {
+        localStorageDirEmulator = new LocalStorageDirEmulator();
+    });
+
+    beforeEach(async () => {
+        const localStorageDir = await localStorageDirEmulator.init();
+        localStorageSubDir = path.join(localStorageDir, 'live_view');
         count = 0;
         lvs = new LiveViewServer({
-            screenshotDirectoryPath: LOCAL_STORAGE_SUBDIR,
+            screenshotDirectoryPath: localStorageSubDir,
             maxScreenshotFiles: 2,
             maxSnapshotFrequencySecs: 0,
         });
     });
 
-    afterEach(async () => {
-        count = null;
-        lvs = null;
-        await emptyDir(LOCAL_STORAGE_SUBDIR);
+    afterAll(async () => {
+        await localStorageDirEmulator.destroy();
     });
 
     test('should construct', async () => {
@@ -63,7 +68,7 @@ describe('LiveViewServer', () => {
     test('should connect over websocket', async () => {
         const socket = io(BASE_URL);
         await lvs.start();
-        await new Promise(resolve => socket.on('connect', resolve));
+        await new Promise((resolve) => socket.on('connect', resolve));
         expect(lvs.hasClients()).toBe(true);
         socket.close();
         await lvs.stop();
@@ -73,11 +78,11 @@ describe('LiveViewServer', () => {
         await lvs.start();
         expect(lvs.hasClients()).toBe(true);
         await lvs.serve(fakePage);
-        let files = await readdir(LOCAL_STORAGE_SUBDIR);
+        let files = await readdir(localStorageSubDir);
         expect(files.length).toBe(1);
         expect(lvs.hasClients()).toBe(false);
         await lvs.serve(fakePage);
-        files = await readdir(LOCAL_STORAGE_SUBDIR);
+        files = await readdir(localStorageSubDir);
         expect(files.length).toBe(1);
         await lvs.stop();
     });
@@ -87,7 +92,7 @@ describe('LiveViewServer', () => {
         beforeEach(async () => {
             socket = io(BASE_URL);
             await lvs.start();
-            await new Promise(resolve => socket.on('connect', resolve));
+            await new Promise((resolve) => socket.on('connect', resolve));
         });
         afterEach(async () => {
             socket.close();
@@ -98,31 +103,31 @@ describe('LiveViewServer', () => {
 
         test('should serve snapshot', async () => {
             await lvs.serve(fakePage);
-            const snapshot = await new Promise(resolve => socket.on('snapshot', resolve));
+            const snapshot = await new Promise((resolve) => socket.on('snapshot', resolve));
             expect(snapshot).toMatchObject({ pageUrl: 'url', htmlContent: 'content', screenshotIndex: 0 });
             expect(`"${snapshot.createdAt}"`).toEqual(JSON.stringify(new Date(snapshot.createdAt)));
         });
 
         test('should return screenshots', async () => {
-            const snapshot0 = new Promise(resolve => socket.on('snapshot', resolve));
+            const snapshot0 = new Promise((resolve) => socket.on('snapshot', resolve));
             await lvs.serve(fakePage);
-            const response0 = await rqst(`${BASE_URL}/screenshot/${((await snapshot0).screenshotIndex)}`);
-            expect(response0).toBe('screenshot0');
-            const snapshot1 = new Promise(resolve => socket.on('snapshot', resolve));
+            const response0 = await requestAsBrowser({ url: `${BASE_URL}/screenshot/${((await snapshot0).screenshotIndex)}` });
+            expect(response0.body).toBe('screenshot0');
+            const snapshot1 = new Promise((resolve) => socket.on('snapshot', resolve));
             await lvs.serve(fakePage);
-            const response1 = await rqst(`${BASE_URL}/screenshot/${(await snapshot1).screenshotIndex}`);
-            expect(response1).toBe('screenshot1');
+            const response1 = await requestAsBrowser({ url: `${BASE_URL}/screenshot/${(await snapshot1).screenshotIndex}` });
+            expect(response1.body).toBe('screenshot1');
         });
 
         test('should not store more than maxScreenshotFiles screenshots', async () => {
             const snapshots = [];
-            socket.on('snapshot', s => snapshots.push(s));
+            socket.on('snapshot', (s) => snapshots.push(s));
             for (let i = 0; i < 5; i++) {
                 await lvs.serve(fakePage);
             }
             const files = await new Promise((resolve, reject) => {
                 const interval = setInterval(async () => {
-                    const files = await readdir(LOCAL_STORAGE_SUBDIR); // eslint-disable-line no-shadow
+                    const files = await readdir(localStorageSubDir); // eslint-disable-line no-shadow
                     if (files.length === 2) {
                         clearInterval(interval);
                         resolve(files);

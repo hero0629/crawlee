@@ -1,31 +1,33 @@
-import { checkParamOrThrow } from 'apify-client/build/utils';
+import ow, { ArgumentError } from 'ow';
 import * as _ from 'underscore';
 import { ACTOR_EVENT_NAMES_EX } from './constants';
-import Request, { RequestOptions } from './request'; // eslint-disable-line no-unused-vars,import/named
-import log from './utils_log';
+import Request from './request'; // eslint-disable-line import/no-duplicates
 import events from './events';
+import log from './utils_log';
 import { getFirstKey, publicUtils } from './utils';
-import { getValue, setValue } from './key_value_store';
+import { getValue, setValue } from './storages/key_value_store';
+import { serializeArray, createDeserialize } from './serialization';
+
+// TYPE IMPORTS
+/* eslint-disable no-unused-vars,import/named,import/no-duplicates,import/order */
+import { RequestOptions } from './request';
+/* eslint-enable no-unused-vars,import/named,import/no-duplicates,import/order */
 
 export const STATE_PERSISTENCE_KEY = 'REQUEST_LIST_STATE';
-export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
+export const REQUESTS_PERSISTENCE_KEY = 'REQUEST_LIST_REQUESTS';
 
-/**
- * @typedef RequestListInput
- * @property {string} [method]
- * @property {string} [requestsFromUrl]
- * @property {RegExp} [regex]
- */
-
-/**
- * @typedef {Array<(RequestListInput|RequestOptions|Request)>} SourceInput
- */
+const CONTENT_TYPE_BINARY = 'application/octet-stream';
 
 /**
  * @typedef RequestListOptions
- * @property {SourceInput} sources
- *  An array of sources of URLs for the `RequestList`. It can be either an array of plain objects that
- *  define the `url` property, or an array of instances of the {@link Request} class.
+ * @property {Array<RequestOptions|Request|string>} [sources]
+ *  An array of sources of URLs for the {@link RequestList}. It can be either an array of strings,
+ *  plain objects that define at least the `url` property, or an array of {@link Request} instances.
+ *
+ *  **IMPORTANT:** The `sources` array will be consumed (left empty) after `RequestList` initializes.
+ *  This is a measure to prevent memory leaks in situations when millions of sources are
+ *  added.
+ *
  *  Additionally, the `requestsFromUrl` property may be used instead of `url`,
  *  which will instruct `RequestList` to download the source URLs from a given remote location.
  *  The URLs will be parsed from the received response.
@@ -33,7 +35,10 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  * ```
  * [
  *     // A single URL
- *     { method: 'GET', url: 'http://example.com/a/b' },
+ *     'http://example.com/a/b',
+ *
+ *     // Modify Request options
+ *     { method: PUT, 'https://example.com/put, payload: { foo: 'bar' }}
  *
  *     // Batch import of URLs from a file hosted on the web,
  *     // where the URLs should be requested using the HTTP POST request
@@ -47,6 +52,45 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *     { requestsFromUrl: 'https://docs.google.com/spreadsheets/d/1GA5sSQhQjB_REes8I5IKg31S-TuRcznWOPjcpNqtxmU/gviz/tq?tqx=out:csv' }
  * ]
  * ```
+ * @property {RequestListSourcesFunction} [sourcesFunction]
+ *   A function that will be called to get the sources for the `RequestList`, but only if `RequestList`
+ *   was not able to fetch their persisted version (see {@link RequestListOptions.persistRequestsKey}).
+ *   It must return an `Array` of {@link Request} or {@link RequestOptions}.
+ *
+ *   This is very useful in a scenario when getting the sources is a resource intensive or time consuming
+ *   task, such as fetching URLs from multiple sitemaps or parsing URLs from large datasets. Using the
+ *   `sourcesFunction` in combination with `persistStateKey` and `persistRequestsKey` will allow you to
+ *   fetch and parse those URLs only once, saving valuable time when your actor migrates or restarts.
+ *
+ *   If both {@link RequestListOptions.sources} and {@link RequestListOptions.sourcesFunction} are provided,
+ *   the sources returned by the function will be added after the `sources`.
+ *
+ *   **Example:**
+ *   ```javascript
+ *   // Let's say we want to scrape URLs extracted from sitemaps.
+ *
+ *   const sourcesFunction = async () => {
+ *       // With super large sitemaps, this operation could take very long
+ *       // and big websites typically have multiple sitemaps.
+ *       const sitemaps = await downloadHugeSitemaps();
+ *       return parseUrlsFromSitemaps(sitemaps);
+ *   }
+ *
+ *   // Sitemaps can change in real-time, so it's important to persist
+ *   // the URLs we collected. Otherwise we might lose our scraping
+ *   // state in case of an actor migration / failure / time-out.
+ *   const requestList = new RequestList({
+ *       sourcesFunction,
+ *       persistStateKey: 'state-key',
+ *       persistRequestsKey: 'requests-key',
+ *   })
+ *
+ *   // The sourcesFunction is called now and the Requests are persisted.
+ *   // If something goes wrong and we need to start again, RequestList
+ *   // will load the persisted Requests from storage and will NOT
+ *   // call the sourcesFunction again, saving time and resources.
+ *   await requestList.initialize();
+ *   ```
  * @property {string} [persistStateKey]
  *   Identifies the key in the default key-value store under which `RequestList` periodically stores its
  *   state (i.e. which URLs were crawled and which not).
@@ -55,13 +99,14 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *
  *   If `persistStateKey` is not set, `RequestList` will always start from the beginning,
  *   and all the source URLs will be crawled again.
- * @property {string} [persistSourcesKey]
+ * @property {string} [persistRequestsKey]
  *   Identifies the key in the default key-value store under which the `RequestList` persists its
- *   sources (i.e. the lists of URLs) during the {@link RequestList#initialize} call.
+ *   Requests during the {@link RequestList#initialize} call.
  *   This is necessary if `persistStateKey` is set and the source URLs might potentially change,
- *   to ensure consistency of the source URLs and state object. However, it comes with some storage and performance overheads.
+ *   to ensure consistency of the source URLs and state object. However, it comes with some
+ *   storage and performance overheads.
  *
- *   If `persistSourcesKey` is not set, {@link RequestList#initialize} will always fetch the sources
+ *   If `persistRequestsKey` is not set, {@link RequestList#initialize} will always fetch the sources
  *   from their origin, check that they are consistent with the restored state (if any)
  *   and throw an error if they are not.
  * @property {RequestListState} [state]
@@ -95,9 +140,12 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *   `uniqueKey`s however. It is the user's responsibility to ensure uniqueness of their unique keys
  *   if they wish to keep more than just a single copy in the `RequestList`.
  */
+
 /**
  * Represents a static list of URLs to crawl.
  * The URLs can be provided either in code or parsed from a text file hosted on the web.
+ * `RequestList` is used by {@link BasicCrawler}, {@link CheerioCrawler}, {@link PuppeteerCrawler}
+ * and {@link PlaywrightCrawler} as a source of URLs to crawl.
  *
  * Each URL is represented using an instance of the {@link Request} class.
  * The list can only contain unique URLs. More precisely, it can only contain `Request` instances
@@ -108,10 +156,12 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *
  * Once you create an instance of `RequestList`, you need to call the {@link RequestList#initialize} function
  * before the instance can be used. After that, no more URLs can be added to the list.
- *
- * `RequestList` is used by {@link BasicCrawler}, {@link CheerioCrawler}
- * and {@link PuppeteerCrawler} as a source of URLs to crawl.
  * Unlike {@link RequestQueue}, `RequestList` is static but it can contain even millions of URLs.
+ * > Note that `RequestList` can be used together with `RequestQueue` by the same crawler.
+ * > In such cases, each request from `RequestList` is enqueued into `RequestQueue` first and then consumed from the latter.
+ * > This is necessary to avoid the same URL being processed more than once (from the list first and then possibly from the queue).
+ * > In practical terms, such a combination can be useful when there is a large number of initial URLs,
+ * > but more URLs would be added dynamically by the crawler.
  *
  * `RequestList` has an internal state where it stores information about which requests were already handled,
  * which are in progress and which were reclaimed. The state may be automatically persisted to the default
@@ -121,17 +171,28 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *
  * The internal state is closely tied to the provided sources (URLs). If the sources change on actor restart, the state will become corrupted and
  * `RequestList` will raise an exception. This typically happens when the sources is a list of URLs downloaded from the web.
- * In such case, use the `persistSourcesKey` option in conjunction with `persistStateKey`,
+ * In such case, use the `persistRequestsKey` option in conjunction with `persistStateKey`,
  * to make the `RequestList` store the initial sources to the default key-value store and load them after restart,
  * which will prevent any issues that a live list of URLs might cause.
  *
- * **Example usage:**
- *
+ * **Basic usage:**
  * ```javascript
+ * // Use a helper function to simplify request list initialization.
+ * // State and sources are automatically persisted. This is a preferred usage.
+ * const requestList = await Apify.openRequestList('my-request-list', [
+ *     'http://www.example.com/page-1',
+ *     { url: 'http://www.example.com/page-2', method: 'POST', userData: { foo: 'bar' }},
+ *     { requestsFromUrl: 'http://www.example.com/my-url-list.txt', userData: { isFromUrl: true } },
+ * ]);
+ * ```
+ *
+ * **Advanced usage:**
+ * ```javascript
+ * // Use the constructor to get more control over the initialization.
  * const requestList = new Apify.RequestList({
  *     sources: [
  *         // Separate requests
- *         { url: 'http://www.example.com/page-1', method: 'GET', headers: {} },
+ *         { url: 'http://www.example.com/page-1', method: 'GET', headers: { ... } },
  *         { url: 'http://www.example.com/page-2', userData: { foo: 'bar' }},
  *
  *         // Bulk load of URLs from file `http://www.example.com/my-url-list.txt`
@@ -139,25 +200,12 @@ export const SOURCES_PERSISTENCE_KEY = 'REQUEST_LIST_SOURCES';
  *         { requestsFromUrl: 'http://www.example.com/my-url-list.txt', userData: { isFromUrl: true } },
  *     ],
  *
- *     // Ensure both the sources and crawling state of the request list is persisted,
- *     // so that on actor restart, the crawling will continue where it left off
+ *     // Persist the state to avoid re-crawling which can lead to data duplications.
+ *     // Keep in mind that the sources have to be immutable or this will throw an error.
  *     persistStateKey: 'my-state',
- *     persistSourcesKey: 'my-sources'
  * });
  *
- * // This call loads and parses the URLs from the remote file.
  * await requestList.initialize();
- *
- * // Get requests from list
- * const request1 = await requestList.fetchNextRequest();
- * const request2 = await requestList.fetchNextRequest();
- * const request3 = await requestList.fetchNextRequest();
- *
- * // Mark some of them as handled
- * await requestList.markRequestHandled(request1);
- *
- * // If processing fails then reclaim it back to the list
- * await requestList.reclaimRequest(request2);
  * ```
  */
 export class RequestList {
@@ -165,18 +213,36 @@ export class RequestList {
      * @param {RequestListOptions} options All `RequestList` configuration options
      */
     constructor(options = {}) {
-        checkParamOrThrow(options, 'options', 'Object');
+        const {
+            sources,
+            sourcesFunction,
+            persistStateKey,
+            persistRequestsKey,
+            state,
+            keepDuplicateUrls = false,
+        } = options;
 
-        const { sources, persistStateKey, persistSourcesKey, state, keepDuplicateUrls = false } = options;
+        if (!(sources || sourcesFunction)) {
+            throw new ArgumentError('At least one of "sources" or "sourcesFunction" must be provided.', this.constructor);
+        }
+        ow(options, ow.object.exactShape({
+            sources: ow.optional.array, // check only for array and not subtypes to avoid iteration over the whole thing
+            sourcesFunction: ow.optional.function,
+            persistStateKey: ow.optional.string,
+            persistRequestsKey: ow.optional.string,
+            state: ow.optional.object.exactShape({
+                nextIndex: ow.number,
+                nextUniqueKey: ow.string,
+                inProgress: ow.object,
+            }),
+            keepDuplicateUrls: ow.optional.boolean,
+        }));
 
-        checkParamOrThrow(sources, 'options.sources', 'Array');
-        checkParamOrThrow(state, 'options.state', 'Maybe Object');
-        checkParamOrThrow(persistStateKey, 'options.persistStateKey', 'Maybe String');
-        checkParamOrThrow(persistSourcesKey, 'options.persistSourcesKey', 'Maybe String');
-        checkParamOrThrow(keepDuplicateUrls, 'options.keepDuplicateUrls', 'Maybe Boolean');
+        this.log = log.child({ prefix: 'RequestList' });
 
         // Array of all requests from all sources, in the order as they appeared in sources.
         // All requests in the array have distinct uniqueKey!
+        /** @type {Array<Request>} */
         this.requests = [];
 
         // Index to the next item in requests array to fetch. All previous requests are either handled or in progress.
@@ -195,8 +261,9 @@ export class RequestList {
         // Note that reclaimedRequests is always a subset of inProgress!
         this.reclaimed = {};
 
-        this.persistStateKey = persistStateKey;
-        this.persistSourcesKey = persistSourcesKey;
+        this.persistStateKey = persistStateKey ? `SDK_${persistStateKey}` : persistStateKey;
+        this.persistRequestsKey = persistRequestsKey;
+        this.persistRequestsKey = this.persistRequestsKey ? `SDK_${persistRequestsKey}` : this.persistRequestsKey;
 
         this.initialState = state;
 
@@ -206,10 +273,12 @@ export class RequestList {
         // Starts as true because until we handle the first request, the list is effectively persisted by doing nothing.
         this.isStatePersisted = true;
         // Starts as false because we don't know yet and sources might change in the meantime (eg. download from live list).
-        this.areSourcesPersisted = false;
+        this.areRequestsPersisted = false;
         this.isLoading = false;
         this.isInitialized = false;
-        this.sources = sources;
+        // Will be empty after initialization to save memory.
+        this.sources = sources || [];
+        this.sourcesFunction = sourcesFunction;
     }
 
     /**
@@ -224,33 +293,89 @@ export class RequestList {
         }
         this.isLoading = true;
 
-        const [state, sources] = await this._loadStateAndSources();
+        const [state, persistedRequests] = await this._loadStateAndPersistedRequests();
 
-        // If there are no sources, it just means that we've not persisted any (yet).
-        if (sources) this.areSourcesPersisted = true;
-        const actualSources = sources || this.sources;
+        // Add persisted requests / new sources in a memory efficient way because with very
+        // large lists, we were running out of memory.
+        if (persistedRequests) {
+            await this._addPersistedRequests(persistedRequests);
+        } else {
+            await this._addRequestsFromSources();
+        }
 
+        this._restoreState(state);
+        this.isInitialized = true;
+        if (this.persistRequestsKey && !this.areRequestsPersisted) await this._persistRequests();
+        if (this.persistStateKey) {
+            events.on(ACTOR_EVENT_NAMES_EX.PERSIST_STATE, this.persistState.bind(this));
+        }
+    }
+
+    /**
+     * Adds previously persisted Requests, as retrieved from the key-value store.
+     * This needs to be done in a memory efficient way. We should update the input
+     * to a Stream once apify-client supports streams.
+     * @param {Buffer} persistedRequests
+     * @ignore
+     * @protected
+     * @internal
+     */
+    async _addPersistedRequests(persistedRequests) {
+        // We don't need the sources so we purge them to
+        // prevent them from hanging in memory.
+        for (let i = 0; i < this.sources.length; i++) {
+            delete this.sources[i];
+        }
+        this.sources = [];
+
+        this.areRequestsPersisted = true;
+        const requestStream = createDeserialize(persistedRequests);
+        for await (const request of requestStream) {
+            this._addRequest(request);
+        }
+    }
+
+    /**
+     * Add Requests from both options.sources and options.sourcesFunction.
+     * This function is called only when persisted sources were not loaded.
+     * We need to avoid keeping both sources and requests in memory
+     * to reduce memory footprint with very large sources.
+     * @returns {Promise<void>}
+     * @ignore
+     * @protected
+     * @internal
+     */
+    async _addRequestsFromSources() {
         // We'll load all sources in sequence to ensure that they get loaded in the right order.
-        const sourcesWithRequestsFromUrl = [];
-        for (const source of actualSources) {
+        const sourcesCount = this.sources.length;
+        for (let i = 0; i < sourcesCount; i++) {
+            const source = this.sources[i];
+            // Using delete here to drop the original object ASAP to free memory
+            // .pop would reverse the array and .shift is SLOW.
+            delete this.sources[i];
+
             if (source.requestsFromUrl) {
                 const fetchedRequests = await this._fetchRequestsFromUrl(source);
-                sourcesWithRequestsFromUrl.push(...fetchedRequests);
                 await this._addFetchedRequests(source, fetchedRequests);
             } else {
-                sourcesWithRequestsFromUrl.push(source);
                 this._addRequest(source);
             }
         }
 
-        // Replace source with source with request from remote URLs
-        this.sources = sourcesWithRequestsFromUrl;
+        // Drop the original array full of empty indexes.
+        this.sources = [];
 
-        this._restoreState(state);
-        this.isInitialized = true;
-        if (this.persistSourcesKey && !this.areSourcesPersisted) await this._persistSources();
-        if (this.persistStateKey) {
-            events.on(ACTOR_EVENT_NAMES_EX.PERSIST_STATE, this.persistState.bind(this));
+        if (this.sourcesFunction) {
+            try {
+                const sourcesFromFunction = await this.sourcesFunction();
+                const sourcesFromFunctionCount = sourcesFromFunction.length;
+                for (let i = 0; i < sourcesFromFunctionCount; i++) {
+                    const source = sourcesFromFunction.shift();
+                    this._addRequest(source);
+                }
+            } catch (err) {
+                throw new Error(`Loading requests with sourcesFunction failed.\nCause: ${err.message}`);
+            }
         }
     }
 
@@ -265,28 +390,31 @@ export class RequestList {
      */
     async persistState() {
         if (!this.persistStateKey) {
-            throw new Error('RequestList: Cannot persist state. options.persistStateKey is not set.');
+            throw new Error('Cannot persist state. options.persistStateKey is not set.');
         }
         if (this.isStatePersisted) return;
         try {
             await setValue(this.persistStateKey, this.getState());
             this.isStatePersisted = true;
         } catch (err) {
-            log.exception(err, 'RequestList attempted to persist state, but failed.');
+            this.log.exception(err, 'Attempted to persist state, but failed.');
         }
     }
 
     /**
      * Unlike persistState(), this is used only internally, since the sources
-     * are automatically persisted at RequestList initialization (if the persistSourcesKey is set),
+     * are automatically persisted at RequestList initialization (if the persistRequestsKey is set),
      * but there's no reason to persist it again afterwards, because RequestList is immutable.
      *
      * @return {Promise<void>}
      * @ignore
+     * @protected
+     * @internal
      */
-    async _persistSources() {
-        await setValue(this.persistSourcesKey, this.sources);
-        this.areSourcesPersisted = true;
+    async _persistRequests() {
+        const serializedRequests = await serializeArray(this.requests);
+        await setValue(this.persistRequestsKey, serializedRequests, { contentType: CONTENT_TYPE_BINARY });
+        this.areRequestsPersisted = true;
     }
 
     /**
@@ -294,6 +422,8 @@ export class RequestList {
      *
      * @param {RequestListState} state
      * @ignore
+     * @protected
+     * @internal
      */
     _restoreState(state) {
         // If there's no state it means we've not persisted any (yet).
@@ -303,18 +433,18 @@ export class RequestList {
             throw new Error('The state object is invalid: nextIndex must be a non-negative number.');
         }
         if (state.nextIndex > this.requests.length) {
-            throw new Error('The state object is not consistent with RequestList: too few requests loaded.');
+            throw new Error('The state object is not consistent with RequestList too few requests loaded.');
         }
         if (state.nextIndex < this.requests.length
             && this.requests[state.nextIndex].uniqueKey !== state.nextUniqueKey) {
-            throw new Error('The state object is not consistent with RequestList: the order of URLs seems to have changed.');
+            throw new Error('The state object is not consistent with RequestList the order of URLs seems to have changed.');
         }
 
         const deleteFromInProgress = [];
         _.keys(state.inProgress).forEach((uniqueKey) => {
             const index = this.uniqueKeyToIndex[uniqueKey];
             if (typeof index !== 'number') {
-                throw new Error('The state object is not consistent with RequestList: unknown uniqueKey is present in the state.');
+                throw new Error('The state object is not consistent with RequestList. Unknown uniqueKey is present in the state.');
             }
             if (index >= state.nextIndex) {
                 deleteFromInProgress.push(uniqueKey);
@@ -335,7 +465,9 @@ export class RequestList {
         // As a workaround, we just remove all inProgress requests whose index >= nextIndex,
         // since they will be crawled again.
         if (deleteFromInProgress.length) {
-            log.warning('RequestList\'s in-progress field is not consistent, skipping invalid in-progress entries', { deleteFromInProgress });
+            this.log.warning('RequestList\'s in-progress field is not consistent, skipping invalid in-progress entries', {
+                deleteFromInProgress,
+            });
             _.each(deleteFromInProgress, (uniqueKey) => {
                 delete state.inProgress[uniqueKey];
             });
@@ -349,26 +481,30 @@ export class RequestList {
     }
 
     /**
-     * Attempts to load state and sources using the `RequestList` configuration
-     * and returns a tuple of [state, sources] where each may be null if not loaded.
+     * Attempts to load state and requests using the `RequestList` configuration
+     * and returns a tuple of [state, requests] where each may be null if not loaded.
      *
      * @return {Promise<Array<(RequestListState|null)>>}
      * @ignore
+     * @protected
+     * @internal
      */
-    async _loadStateAndSources() {
+    async _loadStateAndPersistedRequests() {
         let state;
+        let persistedRequests;
         if (this.initialState) {
-            log.debug('RequestList: Loading previous state from options.state argument.');
             state = this.initialState;
+            this.log.debug('Loaded state from options.state argument.');
         } else if (this.persistStateKey) {
-            log.debug('RequestList: Loading previous state from key value store using the persistStateKey.');
             state = getValue(this.persistStateKey);
+            if (state) this.log.debug('Loaded state from key value store using the persistStateKey.');
         }
-        if (this.persistSourcesKey) {
-            log.debug('RequestList: Loading sources from key value store using the persistSourcesKey.');
-            return Promise.all([state, getValue(this.persistSourcesKey)]);
+        if (this.persistRequestsKey) {
+            persistedRequests = await getValue(this.persistRequestsKey);
+            if (persistedRequests) this.log.debug('Loaded requests from key value store using the persistRequestsKey.');
         }
-        return [await state, null];
+        // Unwraps "state" promise if needed, otherwise no-op.
+        return Promise.all([state, persistedRequests]);
     }
 
     /**
@@ -394,7 +530,7 @@ export class RequestList {
      * would return `null`, otherwise it resolves to `false`.
      * Note that even if the list is empty, there might be some pending requests currently being processed.
      *
-     * @returns {Promise<Boolean>}
+     * @returns {Promise<boolean>}
      */
     async isEmpty() {
         this._ensureIsInitialized();
@@ -405,7 +541,7 @@ export class RequestList {
     /**
      * Returns `true` if all requests were already handled and there are no more left.
      *
-     * @returns {Promise<Boolean>}
+     * @returns {Promise<boolean>}
      */
     async isFinished() {
         this._ensureIsInitialized();
@@ -484,17 +620,19 @@ export class RequestList {
      * Adds all fetched requests from a URL from a remote resource.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     async _addFetchedRequests(source, fetchedRequests) {
         const { requestsFromUrl, regex } = source;
         const originalLength = this.requests.length;
 
-        fetchedRequests.forEach(request => this._addRequest(request));
+        fetchedRequests.forEach((request) => this._addRequest(request));
 
         const fetchedCount = fetchedRequests.length;
         const importedCount = this.requests.length - originalLength;
 
-        log.info('RequestList: list fetched.', {
+        this.log.info('Fetched and loaded Requests from a remote resource.', {
             requestsFromUrl,
             regex,
             fetchedCount,
@@ -506,9 +644,11 @@ export class RequestList {
 
     /**
      * Fetches URLs from requestsFromUrl and returns them in format of list of requests
-     * @param source
+     * @param {*} source
      * @return {Promise<Array<RequestOptions>>}
      * @ignore
+     * @protected
+     * @internal
      */
     async _fetchRequestsFromUrl(source) {
         const sharedOpts = _.omit(source, 'requestsFromUrl', 'regex');
@@ -525,26 +665,37 @@ export class RequestList {
 
         // Skip if resource contained no URLs.
         if (!urlsArr.length) {
-            log.warning('RequestList: list fetched, but it is empty.', { requestsFromUrl, regex });
+            this.log.warning('list fetched, but it is empty.', { requestsFromUrl, regex });
             return [];
         }
 
-        return urlsArr.map(url => _.extend({ url }, sharedOpts));
+        return urlsArr.map((url) => _.extend({ url }, sharedOpts));
     }
 
     /**
      * Adds given request.
-     * If the `opts` parameter is a plain object and not an instance of a `Request`, then the function
-     * creates a `Request` instance.
+     * If the `source` parameter is a string or plain object and not an instance
+     * of a `Request`, then the function creates a `Request` instance.
      *
+     * @param {(string|Request|object)} source
      * @ignore
+     * @protected
+     * @internal
      */
-    _addRequest(opts) {
-        const hasUniqueKey = !!opts.uniqueKey;
+    _addRequest(source) {
+        let request;
+        const type = typeof source;
+        if (type === 'string') {
+            request = new Request({ url: source });
+        } else if (source instanceof Request) {
+            request = source;
+        } else if (source && type === 'object') {
+            request = new Request(source);
+        } else {
+            throw new Error(`Cannot create Request from type: ${type}`);
+        }
 
-        const request = opts instanceof Request
-            ? opts
-            : new Request(opts);
+        const hasUniqueKey = !!source.uniqueKey;
 
         // Add index to uniqueKey if duplicates are to be kept
         if (this.keepDuplicateUrls && !hasUniqueKey) {
@@ -559,7 +710,7 @@ export class RequestList {
             this.uniqueKeyToIndex[uniqueKey] = this.requests.length;
             this.requests.push(request);
         } else if (this.keepDuplicateUrls) {
-            log.warning(`RequestList: Duplicate uniqueKey: ${uniqueKey} found while the keepDuplicateUrls option was set. Check your sources' unique keys.`); // eslint-disable-line max-len
+            this.log.warning(`Duplicate uniqueKey: ${uniqueKey} found while the keepDuplicateUrls option was set. Check your sources' unique keys.`); // eslint-disable-line max-len
         }
     }
 
@@ -568,6 +719,8 @@ export class RequestList {
      * Throws an error if uniqueKey is not a non-empty string.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     _ensureUniqueKeyValid(uniqueKey) { // eslint-disable-line class-methods-use-this
         if (typeof uniqueKey !== 'string' || !uniqueKey) {
@@ -579,6 +732,8 @@ export class RequestList {
      * Checks that request is not reclaimed and throws an error if so.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     _ensureInProgressAndNotReclaimed(uniqueKey) {
         if (!this.inProgress[uniqueKey]) {
@@ -593,6 +748,8 @@ export class RequestList {
      * Throws an error if request list wasn't initialized.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     _ensureIsInitialized() {
         if (!this.isInitialized) {
@@ -629,7 +786,7 @@ export class RequestList {
  *
  * {@link RequestList} represents a list of URLs to crawl, which is always stored in memory.
  * To enable picking up where left off after a process restart, the request list sources
- * are persisted to the key value store at initialization of the list. Then, while crawling,
+ * are persisted to the key-value store at initialization of the list. Then, while crawling,
  * a small state object is regularly persisted to keep track of the crawling status.
  *
  * For more details and code examples, see the {@link RequestList} class.
@@ -648,18 +805,22 @@ export class RequestList {
  *
  * @param {string|null} listName
  *   Name of the request list to be opened. Setting a name enables the `RequestList`'s state to be persisted
- *   in the key value store. This is useful in case of a restart or migration. Since `RequestList` is only
+ *   in the key-value store. This is useful in case of a restart or migration. Since `RequestList` is only
  *   stored in memory, a restart or migration wipes it clean. Setting a name will enable the `RequestList`'s
  *   state to survive those situations and continue where it left off.
  *
- *   The name will be used as a prefix in key value store, producing keys such as `NAME-REQUEST_LIST_STATE`
+ *   The name will be used as a prefix in key-value store, producing keys such as `NAME-REQUEST_LIST_STATE`
  *   and `NAME-REQUEST_LIST_SOURCES`.
  *
  *   If `null`, the list will not be persisted and will only be stored in memory. Process restart
  *   will then cause the list to be crawled again from the beginning. We suggest always using a name.
- * @param {(SourceInput|string[])} sources
- *  An array of sources of URLs for the {@link RequestList}. It can be either an array of plain objects
- *  that define at least the `url` property, or an array of instances of the {@link Request} class.
+ * @param {Array<RequestOptions|Request|string>} sources
+ *  An array of sources of URLs for the {@link RequestList}. It can be either an array of strings,
+ *  plain objects that define at least the `url` property, or an array of {@link Request} instances.
+ *
+ *  **IMPORTANT:** The `sources` array will be consumed (left empty) after {@link RequestList} initializes.
+ *  This is a measure to prevent memory leaks in situations when millions of sources are
+ *  added.
  *
  *  Additionally, the `requestsFromUrl` property may be used instead of `url`,
  *  which will instruct {@link RequestList} to download the source URLs from a given remote location.
@@ -669,7 +830,7 @@ export class RequestList {
  *  For details, see the {@link RequestListOptions.sources}
  * @param {RequestListOptions} [options]
  *   The {@link RequestList} options. Note that the `listName` parameter supersedes
- *   the {@link RequestListOptions.persistStateKey} and {@link RequestListOptions.persistSourcesKey}
+ *   the {@link RequestListOptions.persistStateKey} and {@link RequestListOptions.persistRequestsKey}
  *   options and the `sources` parameter supersedes the {@link RequestListOptions.sources} option.
  * @returns {Promise<RequestList>}
  * @memberof module:Apify
@@ -677,18 +838,14 @@ export class RequestList {
  * @function
  */
 export const openRequestList = async (listName, sources, options = {}) => {
-    checkParamOrThrow(listName, 'listName', 'String | Null');
-    checkParamOrThrow(sources, 'sources', '[Object | String]');
-    if (!sources.length) throw new Error('Parameter sources must not be an empty array.');
-    checkParamOrThrow(options, 'options', 'Object');
-
-    // Support both an array of strings and array of objects.
-    if (typeof sources[0] === 'string') sources = sources.map(url => ({ url }));
+    ow(listName, ow.any(ow.string, ow.null));
+    ow(sources, ow.array);
+    ow(options, ow.object.is((v) => !Array.isArray(v)));
 
     const rl = new RequestList({
         ...options,
-        persistStateKey: listName ? `${listName}-${STATE_PERSISTENCE_KEY}` : null,
-        persistSourcesKey: listName ? `${listName}-${SOURCES_PERSISTENCE_KEY}` : null,
+        persistStateKey: listName ? `${listName}-${STATE_PERSISTENCE_KEY}` : undefined,
+        persistRequestsKey: listName ? `${listName}-${REQUESTS_PERSISTENCE_KEY}` : undefined,
         sources,
     });
     await rl.initialize();
@@ -696,7 +853,7 @@ export const openRequestList = async (listName, sources, options = {}) => {
 };
 
 /**
- * Represents state of a {RequestList}. It can be used to resume a {RequestList} which has been previously processed.
+ * Represents state of a {@link RequestList}. It can be used to resume a {@link RequestList} which has been previously processed.
  * You can obtain the state by calling {@link RequestList#getState} and receive an object with
  * the following structure:
  *
@@ -718,4 +875,9 @@ export const openRequestList = async (listName, sources, options = {}) => {
  *   Key of the next request to be processed.
  * @property {Object<string,boolean>} inProgress
  *   An object mapping request keys to a boolean value respresenting whether they are being processed at the moment.
+ */
+
+/**
+ * @callback RequestListSourcesFunction
+ * @return {Promise<Array<(RequestOptions|Request|string)>>}
  */

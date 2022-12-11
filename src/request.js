@@ -1,25 +1,11 @@
-import * as _ from 'underscore';
-import * as util from 'util';
-import * as crypto from 'crypto';
-import { checkParamOrThrow } from 'apify-client/build/utils';
 import { normalizeUrl } from 'apify-shared/utilities';
-import log from './utils_log';
+import * as crypto from 'crypto';
+import ow, { ArgumentError } from 'ow';
+import * as util from 'util';
+import defaultLog from './utils_log';
 
-export function computeUniqueKey({ url, method, payload, keepUrlFragment, useExtendedUniqueKey }) {
-    const normalizedMethod = method.toUpperCase();
-    const normalizedUrl = normalizeUrl(url, keepUrlFragment) || url; // It returns null when url is invalid, causing weird errors.
-    if (!useExtendedUniqueKey) {
-        if (normalizedMethod !== 'GET' && payload) {
-            // Using log.deprecated to log only once. We should add log.once or some such.
-            log.deprecated(`We've encountered a ${normalizedMethod} Request with a payload. `
-                + 'This is fine. Just letting you know that if your requests point to the same URL '
-                + 'and differ only in method and payload, you should see the "useExtendedUniqueKey" option of Request constructor.');
-        }
-        return normalizedUrl;
-    }
-    const payloadHash = payload ? hashPayload(payload) : '';
-    return `${normalizedMethod}(${payloadHash}):${normalizedUrl}`;
-}
+// new properties on the Request object breaks serialization
+const log = defaultLog.child({ prefix: 'Request' });
 
 export function hashPayload(payload) {
     return crypto
@@ -30,6 +16,22 @@ export function hashPayload(payload) {
         .substr(0, 8);
 }
 
+const requestOptionalPredicates = {
+    id: ow.optional.string,
+    loadedUrl: ow.optional.string.url,
+    uniqueKey: ow.optional.string,
+    method: ow.optional.string,
+    payload: ow.optional.any(ow.string, ow.buffer),
+    noRetry: ow.optional.boolean,
+    retryCount: ow.optional.number,
+    errorMessages: ow.optional.array.ofType(ow.string),
+    headers: ow.optional.object,
+    userData: ow.optional.object,
+    handledAt: ow.optional.any(ow.string.date, ow.date),
+    keepUrlFragment: ow.optional.boolean,
+    useExtendedUniqueKey: ow.optional.boolean,
+};
+
 /**
  * Represents a URL to be crawled, optionally including HTTP method, headers, payload and other metadata.
  * The `Request` object also stores information about errors that occurred during processing of the request.
@@ -37,7 +39,7 @@ export function hashPayload(payload) {
  * Each `Request` instance has the `uniqueKey` property, which can be either specified
  * manually in the constructor or generated automatically from the URL. Two requests with the same `uniqueKey`
  * are considered as pointing to the same web resource. This behavior applies to all Apify SDK classes,
- * such as {@link RequestList}, {@link RequestQueue} or {@link PuppeteerCrawler}.
+ * such as {@link RequestList}, {@link RequestQueue}, {@link PuppeteerCrawler} or {@link PlaywrightCrawler}.
  *
  * Example use:
  *
@@ -65,7 +67,7 @@ export function hashPayload(payload) {
  *   An actually loaded URL after redirects, if present. HTTP redirects are guaranteed
  *   to be included.
  *
- *   When using {@link PuppeteerCrawler}, meta tag and JavaScript redirects may,
+ *   When using {@link PuppeteerCrawler} or {@link PlaywrightCrawler}, meta tag and JavaScript redirects may,
  *   or may not be included, depending on their nature. This generally means that redirects,
  *   which happen immediately will most likely be included, but delayed redirects will not.
  * @property {string} uniqueKey
@@ -81,9 +83,9 @@ export function hashPayload(payload) {
  *   Indicates the number of times the crawling of the request has been retried on error.
  * @property {string[]} errorMessages
  *   An array of error messages from request processing.
- * @property {Object} headers
+ * @property {Object<string, string>} headers
  *   Object with HTTP headers. Key is header name, value is the value.
- * @property {object} userData
+ * @property {Object<string, *>} userData
  *   Custom user data assigned to the request.
  * @property {Date} handledAt
  *   Indicates the time when the request has been processed.
@@ -94,64 +96,65 @@ class Request {
      * @param {RequestOptions} options
      * `Request` parameters including the URL, HTTP method and headers, and others.
      */
-    constructor(options = {}) {
-        checkParamOrThrow(options, 'options', 'Object');
+    constructor(options) {
+        ow(options, 'RequestOptions', ow.object);
+        ow(options.url, 'RequestOptions.url', ow.string.url);
+        // 'ow' validation is slow, because it checks all predicates
+        // even if the validated object has only 1 property.
+        // This custom validation loop iterates only over existing
+        // properties and speeds up the validation cca 3-fold.
+        // See https://github.com/sindresorhus/ow/issues/193
+        Object.keys(options).forEach((prop) => {
+            const predicate = requestOptionalPredicates[prop];
+            const value = options[prop];
+            if (predicate) {
+                ow(value, `RequestOptions.${prop}`, predicate);
+                // 'url' is checked above because it's not optional
+            } else if (prop !== 'url') {
+                const msg = `Did not expect property \`${prop}\` to exist, got \`${value}\` in object \`RequestOptions\``;
+                throw new ArgumentError(msg, this.constructor);
+            }
+        });
 
         const {
             id,
             url,
-            loadedUrl = null,
+            loadedUrl,
             uniqueKey,
             method = 'GET',
-            payload = null,
+            payload,
             noRetry = false,
             retryCount = 0,
-            errorMessages = null,
+            errorMessages = [],
             headers = {},
             userData = {},
-            handledAt = null,
+            handledAt,
             keepUrlFragment = false,
             useExtendedUniqueKey = false,
         } = options;
 
-
-        checkParamOrThrow(id, 'id', 'Maybe String');
-        checkParamOrThrow(url, 'url', 'String');
-        checkParamOrThrow(loadedUrl, 'url', 'Maybe String');
-        checkParamOrThrow(uniqueKey, 'uniqueKey', 'Maybe String');
-        checkParamOrThrow(method, 'method', 'String');
-        checkParamOrThrow(payload, 'payload', 'Maybe Buffer | String');
-        checkParamOrThrow(noRetry, 'noRetry', 'Boolean');
-        checkParamOrThrow(retryCount, 'retryCount', 'Number');
-        checkParamOrThrow(errorMessages, 'errorMessages', 'Maybe Array');
-        checkParamOrThrow(headers, 'headers', 'Object');
-        checkParamOrThrow(userData, 'userData', 'Object');
-        checkParamOrThrow(handledAt, 'handledAt', 'Maybe String | Date');
-        checkParamOrThrow(keepUrlFragment, 'keepUrlFragment', 'Boolean');
-        checkParamOrThrow(useExtendedUniqueKey, 'useExtendedUniqueKey', 'Boolean');
-
         if (method === 'GET' && payload) throw new Error('Request with GET method cannot have a payload.');
-
-        if (!url) throw new Error('The "url" option cannot be empty string.');
 
         this.id = id;
         this.url = url;
         this.loadedUrl = loadedUrl;
-        this.uniqueKey = uniqueKey || computeUniqueKey({ url, method, payload, keepUrlFragment, useExtendedUniqueKey });
+        this.uniqueKey = uniqueKey || this._computeUniqueKey({ url, method, payload, keepUrlFragment, useExtendedUniqueKey });
         this.method = method;
         this.payload = payload;
         this.noRetry = noRetry;
         this.retryCount = retryCount;
-        this.errorMessages = JSON.parse(JSON.stringify(errorMessages));
-        this.headers = JSON.parse(JSON.stringify(headers));
-        this.userData = JSON.parse(JSON.stringify(userData));
-
+        this.errorMessages = [...errorMessages];
+        // @property are ignored when reassigning, needs to enforced set again,
+        // otherwise the type will be {}
+        /** @type {Object<string, string>} */
+        this.headers = { ...headers };
+        /** @type {Object<string, any>} */
+        this.userData = { ...userData };
         // Requests received from API will have ISOString dates,
         // but we want to have a Date instance.
-        // eslint-disable-next-line no-nested-ternary
-        this.handledAt = _.isDate(handledAt)
-            ? handledAt
-            : (handledAt ? new Date(handledAt) : null);
+        this.handledAt = typeof handledAt === 'string'
+            ? new Date(handledAt)
+            : handledAt;
     }
 
     /**
@@ -165,7 +168,7 @@ class Request {
      * as possible, since just throwing a bad type error makes any debugging rather difficult.
      *
      * @param {(Error|string)} errorOrMessage Error object or error message to be stored in the request.
-     * @param {Object} [options]
+     * @param {object} [options]
      * @param {boolean} [options.omitStack=false] Only push the error message without stack trace when true.
      */
     pushErrorMessage(errorOrMessage, options = {}) {
@@ -197,33 +200,35 @@ class Request {
             message = errorOrMessage.toString();
         }
 
-        if (!this.errorMessages) this.errorMessages = [];
         this.errorMessages.push(message);
     }
 
     /**
-     * Flags the request with no retry which prevents {@link BasicCrawler}
-     * (as well as {@PuppeteerCrawler} and {@CheerioCrawler}, since they use {@BasicCrawler} internally)
-     * from retrying the request after an error occurs.
-     *
-     * Optionally accepts a message that will be used to construct
-     * and throw an Error.
-     *
-     * @param {string} [message]
-     * @deprecated 2019/06/26
      * @ignore
+     * @protected
+     * @internal
      */
-    doNotRetry(message) {
-        log.deprecated('request.doNotRetry is deprecated. Use request.noRetry = true; instead.');
-        this.noRetry = true;
-        if (message) throw new Error(message);
+    _computeUniqueKey({ url, method, payload, keepUrlFragment, useExtendedUniqueKey }) {
+        const normalizedMethod = method.toUpperCase();
+        const normalizedUrl = normalizeUrl(url, keepUrlFragment) || url; // It returns null when url is invalid, causing weird errors.
+        if (!useExtendedUniqueKey) {
+            if (normalizedMethod !== 'GET' && payload) {
+                // Using log.deprecated to log only once. We should add log.once or some such.
+                log.deprecated(`We've encountered a ${normalizedMethod} Request with a payload. `
+                    + 'This is fine. Just letting you know that if your requests point to the same URL '
+                    + 'and differ only in method and payload, you should see the "useExtendedUniqueKey" option of Request constructor.');
+            }
+            return normalizedUrl;
+        }
+        const payloadHash = payload ? hashPayload(payload) : '';
+        return `${normalizedMethod}(${payloadHash}):${normalizedUrl}`;
     }
 }
 
 export default Request;
 
 /**
- * Specifies required and optional fields for constructing a [`Request`](../api/request).
+ * Specifies required and optional fields for constructing a {@link Request}.
  *
  * @typedef RequestOptions
  * @property {string} url URL of the web page to crawl. It must be a non-empty string.
@@ -245,7 +250,7 @@ export default Request;
  * @property {string} [method='GET']
  * @property {(string|Buffer)} [payload]
  *   HTTP request payload, e.g. for POST requests.
- * @property {Object} [headers={}]
+ * @property {Object<string,string>} [headers]
  *   HTTP headers in the following format:
  *   ```
  *   {
@@ -253,7 +258,7 @@ export default Request;
  *       'Content-Type': 'application/json'
  *   }
  *   ```
- * @property {object} [userData={}]
+ * @property {Object<string,*>} [userData]
  *   Custom user data assigned to the request. Use this to save any request related data to the
  *   request's scope, keeping them accessible on retries, failures etc.
  * @property {boolean} [keepUrlFragment=false]

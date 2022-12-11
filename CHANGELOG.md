@@ -1,4 +1,372 @@
-0.20.0 /
+1.1.0 / 2021/03/19
+====================
+In this minor release we focused on the `SessionPool`. Besides fixing a few bugs, we added one important feature: setting and getting of sessions by ID.
+
+```js
+// Now you can add specific sessions to the pool,
+// instead of relying on random generation.
+await sessionPool.addSession({
+    id: 'my-session',
+    // ... some config
+});
+
+// Later, you can retrieve the session. This is useful
+// for example when you need a specific login session.
+const session = await sessionPool.getSession('my-session');
+```
+
+## Full list of changes:
+- Add `sessionPool.addSession()` function to add a new session to the session pool (possibly with the provided options, e.g. with specific session id).
+- Add optional parameter `sessionId` to `sessionPool.getSession()` to be able to retrieve a session from the session pool with the specific session id.
+- Fix `SessionPool` not working properly in both `PuppeteerCrawler` and `PlaywrightCrawler`.
+- Fix `Apify.call()` and `Apify.callTask()` output - make it backwards compatible with previous versions of the client.
+- Improve handling of browser executable paths when using the official SDK Docker images.
+- Update `browser-pool` to fix issues with failing hooks causing browsers to get stuck in limbo.
+- Removed `proxy-chain` dependency because now it's covered in `browser-pool`.
+
+1.0.2 / 2021/03/05
+====================
+- Add the ability to override `ProxyConfiguration` status check URL with the `APIFY_PROXY_STATUS_URL` env var.
+- Fix inconsistencies in cookie handling when `SessionPool` was used.
+- Fix TS types in multiple places. TS is still not a first class citizen, but this should improve the experience.
+
+1.0.1 / 2021/02/03
+====================
+- Fix `dataset.pushData()` validation which would not allow other than plain objects.
+- Fix `PuppeteerLaunchContext.stealth` throwing when used in `PuppeteerCrawler`.
+
+1.0.0 / 2021/01/25
+====================
+After 3.5 years of rapid development and a lot of breaking changes and deprecations,
+here comes the result - **Apify SDK v1**. There were two goals for this release. **Stability**
+and **adding support for more browsers** - Firefox and Webkit (Safari).
+
+The SDK has grown quite popular over the years, powering thousands of web scraping
+and automation projects. We think our developers deserve a stable environment to work
+in and by releasing SDK v1, **we commit to only make breaking changes once a year,
+with a new major release**.
+
+We added support for more browsers by replacing `PuppeteerPool` with
+[`browser-pool`](https://github.com/apify/browser-pool). A new library that we created
+specifically for this purpose. It builds on the ideas from `PuppeteerPool` and extends
+them to support [Playwright](https://github.com/microsoft/playwright). Playwright is
+a browser automation library similar to Puppeteer. It works with all well known browsers
+and uses almost the same interface as Puppeteer, while adding useful features and simplifying
+common tasks. Don't worry, you can still use Puppeteer with the new `BrowserPool`.
+
+A large breaking change is that neither `puppeteer` nor `playwright` are bundled with
+the SDK v1. To make the choice of a library easier and installs faster, users will
+have to install the selected modules and versions themselves. This allows us to add
+support for even more libraries in the future.
+
+Thanks to the addition of Playwright we now have a `PlaywrightCrawler`. It is very similar
+to `PuppeteerCrawler` and you can pick the one you prefer. It also means we needed to make
+some interface changes. The `launchPuppeteerFunction` option of `PuppeteerCrawler` is gone
+and `launchPuppeteerOptions` were replaced by `launchContext`. We also moved things around
+in the `handlePageFunction` arguments. See the
+[migration guide](https://github.com/apify/apify-js/blob/master/MIGRATIONS.md)
+for more detailed explanation and migration examples.
+
+What's in store for SDK v2? We want to split the SDK into smaller libraries,
+so that everyone can install only the things they need. We plan a TypeScript migration
+to make crawler development faster and safer. Finally, we will take a good look
+at the interface of the whole SDK and update it to improve the developer experience.
+Bug fixes and scraping features will of course keep landing in versions 1.X as well.
+
+## Full list of changes:
+- **BREAKING:** Removed `puppeteer` from dependencies. If you want to use Puppeteer,
+  you must install it yourself.
+- **BREAKING:** Removed `PuppeteerPool`. Use [`browser-pool`](https://github.com/apify/browser-pool).
+- **BREAKING:** Removed `PuppeteerCrawlerOptions.launchPuppeteerOptions`. Use `launchContext`.
+- **BREAKING:** Removed `PuppeteerCrawlerOptions.launchPuppeteerFunction`.
+  Use `PuppeteerCrawlerOptions.preLaunchHooks` and `postLaunchHooks`.
+- **BREAKING:** Removed `args.autoscaledPool` and `args.puppeteerPool` from `handle(Page/Request)Function`
+  arguments. Use `args.crawler.autoscaledPool` and `args.crawler.browserPool`.
+- **BREAKING:** The `useSessionPool` and `persistCookiesPerSession` options of crawlers
+  are now `true` by default. Explicitly set them to `false` to override the behavior.
+- **BREAKING:** `Apify.launchPuppeteer()` no longer accepts `LaunchPuppeteerOptions`.
+  It now accepts `PuppeteerLaunchContext`.
+
+### New deprecations:
+- **DEPRECATED:** `PuppeteerCrawlerOptions.gotoFunction`.
+  Use `PuppeteerCrawlerOptions.preNavigationHooks` and `postNavigationHooks`.
+
+### Removals of earlier deprecated functions:
+- **BREAKING:** Removed `Apify.utils.puppeteer.enqueueLinks()`. Deprecated in 01/2019.
+  Use `Apify.utils.enqueueLinks()`.
+- **BREAKING:** Removed `autoscaledPool.(set|get)MaxConcurrency()`. Deprecated in 2019.
+  Use `autoscaledPool.maxConcurrency`.
+- **BREAKING:** Removed `CheerioCrawlerOptions.requestOptions`. Deprecated in 03/2020.
+  Use `CheerioCrawlerOptions.prepareRequestFunction`.
+- **BREAKING:** Removed `Launch.requestOptions`. Deprecated in 03/2020.
+  Use `CheerioCrawlerOptions.prepareRequestFunction`.
+
+
+### New features:
+- Added `Apify.PlaywrightCrawler` which is almost identical to `PuppeteerCrawler`,
+  but it crawls with the `playwright` library.
+- Added `Apify.launchPlaywright(launchContext)` helper function.
+- Added `browserPoolOptions` to `PuppeteerCrawler` to configure `BrowserPool`.
+- Added `crawler` to `handle(Request/Page)Function` arguments.
+- Added `browserController` to `handlePageFunction` arguments.
+- Added `crawler.crawlingContexts` `Map` which includes all running `crawlingContext`s.
+
+0.22.4 / 2021/01/10
+====================
+- Fix issues with `Apify.pushData()` and `keyValueStore.forEachKey()`
+  by updating `@apify/storage-local` to `1.0.2`.
+
+0.22.3 / 2021/01/09
+====================
+- Fix `puppeteerPool` missing in handle page arguments.
+
+0.22.2 / 2020/12/22
+====================
+- Pinned `cheerio` to `1.0.0-rc.3` to avoid install problems in some builds.
+- Increased default `maxEventLoopOverloadedRatio` in `SystemStatusOptions` to 0.6.
+- Updated packages and improved docs.
+
+0.22.1 / 2020/12/09
+====================
+This is the last major release before SDK v1.0.0. We're committed to deliver v1 at the
+end of 2020 so stay tuned. Besides Playwright integration via a new `BrowserPool`,
+it will be the first release of SDK that we'll support for an extended period of time.
+We will not make any breaking changes until 2.0.0, which will come at the end of
+2021. But enough about v1, let's see the changes in 0.22.0.
+
+In this release we've changed a lot of code, but you may not even notice.
+We've updated the underlying `apify-client` package which powers all communication with
+the Apify API to version `1.0.0`. This means a completely new API for all internal calls.
+If you use `Apify.client` calls in your code, this will be a large breaking change for you.
+Visit the [client docs](https://github.com/apify/apify-client-js/blob/master/README.md)
+to see what's new in the client, but also note that we removed the default client
+available under `Apify.client` and replaced it with `Apify.newClient()` function.
+We think it's better to have separate clients for users and internal use.
+
+Until now, local emulation of Apify Storages has been a part of the SDK. We moved the logic
+into a separate package `@apify/storage-local` which shares interface with `apify-client`.
+`RequestQueue` is now powered by `SQLite3` instead of file system, which improves
+reliability and performance quite a bit. `Dataset` and `KeyValueStore` still use file
+system, for easy browsing of data. The structure of `apify_storage` folder remains unchanged.
+
+After collecting common developer mistakes, we've decided to make argument validation stricter.
+You will no longer be able to pass extra arguments to functions and constructors. This is
+to alleviate frustration, when you mistakenly pass `useChrome` to `PuppeteerPoolOptions`
+instead of `LaunchPuppeteerOptions` and don't realize it. Before this version, SDK wouldn't
+let you know and would silently continue with Chromium. Now, it will throw an error saying
+that `useChrome` is not an allowed property of `PuppeteerPoolOptions`.
+
+Based on developer feedback, we decided to remove `--no-sandbox` from the default Puppeteer
+launch args. It will only be used on Apify Platform. This gives you the chance to use
+your own sandboxing strategy.
+
+`LiveViewServer` and `puppeteerPoolOptions.useLiveView` were never very user-friendly
+or performant solutions, due to the inherent performance issues with rapidly taking many
+screenshots in Puppeteer. We've decided to remove it. If you need similar functionality,
+try the `devtools-server` NPM package, which utilizes the Chrome DevTools Frontend for
+screen-casting live view of the running browser.
+
+Full list of changes:
+
+- **BREAKING:** Updated `apify-client` to `1.0.0` with a completely new interface.
+  We also removed the `Apify.client` property and replaced it with an `Apify.newClient()`
+  function that creates a new `ApifyClient` instance.
+- **BREAKING:** Removed `--no-sandbox` from default Puppeteer launch arguments.
+  This will most likely be breaking for Linux and Docker users.
+- **BREAKING:** Function argument validation is now more strict and will not accept extra
+  parameters which are not defined by the functions' signatures.
+- **DEPRECATED:** `puppeteerPoolOptions.useLiveView` is now deprecated.
+  Use the `devtools-server` NPM package instead.
+
+- Added `postResponseFunction` to `CheerioCrawlerOptions`. It allows you to override
+  properties on the HTTP response before processing by `CheerioCrawler`.
+- Added HTTP2 support to `utils.requestAsBrowser()`. Set `useHttp2` to `true`
+  in `RequestAsBrowserOptions` to enable it.
+- Fixed handling of XML content types in `CheerioCrawler`.
+- Fixed capitalization of headers when using `utils.puppeteer.addInterceptRequestHandler`.
+- Fixed `utils.puppeteer.saveSnapshot()` overwriting screenshots with HTML on local.
+- Updated `puppeteer` to version `5.4.1` with Chrom(ium) 87.
+- Removed `RequestQueueLocal` in favor of `@apify/storage-local` API emulator.
+- Removed `KeyValueStoreLocal` in favor of `@apify/storage-local` API emulator.
+- Removed `DatasetLocal` in favor of `@apify/storage-local` API emulator.
+- Removed the `userData` option from `Apify.utils.enqueueLinks` (deprecated in Jun 2019).
+  Use `transformRequestFunction` instead.
+- Removed `instanceKillerIntervalMillis` and `killInstanceAfterMillis` (deprecated in Feb 2019).
+  Use `instanceKillerIntervalSecs` and `killInstanceAfterSecs` instead.
+- Removed the `memory` option from `Apify.call` `options` which was (deprecated in 2018).
+  Use `memoryMbytes` instead.
+- Removed `delete()` methods from `Dataset`, `KeyValueStore` and `RequestQueue` (deprecated in Jul 2019).
+  Use `.drop()`.
+- Removed `utils.puppeteer.hideWebDriver()` (deprecated in May 2019).
+  Use `LaunchPuppeteerOptions.stealth`.
+- Removed `utils.puppeteer.enqueueRequestsFromClickableElements()` (deprecated in 2018).
+  Use `utils.puppeteer.enqueueLinksByClickingElements`.
+- Removed `request.doNotRetry()` (deprecated in June 2019)
+  Use `request.noRetry = true`.
+- Removed `RequestListOptions.persistSourcesKey` (deprecated in Feb 2020)
+  Use `persistRequestsKey`.
+- Removed the `The function passed to Apify.main() threw an exception` error message,
+  because it was confusing to users.
+- Removed automatic injection of `charset=utf-8` in `keyValueStore.setValue()`
+  to the `contentType` option.
+
+0.22.0 / 2020/12/07
+====================
+- Technical release, see 0.22.1
+
+0.21.11 / 2020/12/22
+====================
+- Pinned `cheerio` to `1.0.0-rc.3` to avoid install problems in some builds.
+
+0.21.10 / 2020/12/07
+====================
+- Bump Puppeteer to 5.5.0 and Chrom(ium) 88.
+
+0.21.9 / 2020/11/03
+====================
+- Fix various issues in `stealth`.
+- Fix `SessionPool` not retiring sessions immediately when they become unusable.
+  It fixes a problem where `PuppeteerPool` would not retire browsers wit bad sessions.
+
+0.21.8 / 2020/10/07
+====================
+- Make `PuppeteerCrawler` safe against malformed Puppeteer responses.
+- Update default user agent to Chrome 86
+- Bump Puppeteer to 5.3.1 with Chromium 86
+
+0.21.7 / 2020/10/03
+====================
+- Fix an error in `PuppeteerCrawler` caused by `page.goto()` randomly returning `null`.
+
+0.21.6 / 2020/10/02
+====================
+It appears that `CheerioCrawler` was correctly retiring sessions on timeouts
+and blocked status codes (401, 403, 429), whereas `PuppeteerCrawler` did not.
+Apologies for the omission, this release fixes the problem.
+
+- Fix sessions not being retired on blocked status codes in `PuppeteerCrawler`.
+- Fix sessions not being marked bad on navigation timeouts in `PuppeteerCrawler`.
+- Update `apify-shared` to version `0.5.0`.
+
+0.21.5 / 2020/09/30
+====================
+This is a very minor release that fixes some issues that were preventing
+use of the SDK with Node 14.
+
+- Update the request serialization process which is used in `RequestList`
+  to work with Node 10+.
+- Update some TypeScript types that were preventing build due to changes
+  in typed dependencies.
+
+0.21.4 / 2020/09/02
+====================
+The statistics that you may remember from logs are now persisted in key-value store,
+so you won't lose count when your actor restarts. We've also added a lot of useful
+stats in there which can be useful to you after a run finishes. Besides that,
+we fixed some bugs and annoyances and improved the TypeScript experience a bit.
+
+- Add persistence to `Statistics` class and automatically persist it in `BasicCrawler`.
+- Fix issue where inaccessible Apify Proxy would cause `ProxyConfiguration` to throw
+  a timeout error.
+- Update default user agent to Chrome 85
+- Bump Puppeteer to 5.2.1 which uses Chromium 85
+- **TypeScript**: Fix `RequestAsBrowserOptions` missing some values and add `RequestQueueInfo`
+  as a return value from `requestQueue.getInfo()`
+
+0.21.3 / 2020/07/27
+====================
+- Fix useless logging in Session.
+
+0.21.2 / 2020/07/27
+====================
+- Fix cookies with leading dot in domain (as extracted from Puppeteer)
+  not being correctly added to Sessions.
+
+0.21.1 / 2020/07/21
+====================
+We fixed some bugs, improved a few things and bumped Puppeteer to match latest Chrome 84.
+
+- Allow `Apify.createProxyConfiguration` to be used seamlessly with the proxy component
+  of Actor Input UI.
+- Fix integration of plugins into `CheerioCrawler` with the `crawler.use()` function.
+- Fix a race condition which caused `RequestQueueLocal` to fail handling requests.
+- Fix broken debug logging in `SessionPool`.
+- Improve `ProxyConfiguration` error message for missing password / token.
+- Update Puppeteer to 5.2.0
+- Improve docs, update packages and so on.
+
+0.21.0 / 2020/06/06
+====================
+This release comes with **breaking changes** that will affect most,
+if not all of your projects. See the [migration guide](https://github.com/apifytech/apify-js/blob/master/MIGRATIONS.md)
+for more information and examples.
+
+First large change is a redesigned proxy configuration. `Cheerio` and `Puppeteer` crawlers
+now accept a `proxyConfiguration` parameter, which is an instance of `ProxyConfiguration`.
+This class now exclusively manages both Apify Proxy and custom proxies. Visit the new
+[proxy management guide](https://sdk.apify.com/docs/guides/proxy-management)
+
+We also removed `Apify.utils.getRandomUserAgent()` as it was no longer effective
+in avoiding bot detection and changed the default values for empty properties in
+`Request` instances.
+
+- **BREAKING:** Removed `Apify.getApifyProxyUrl()`. To get an Apify Proxy url,
+  use `proxyConfiguration.newUrl([sessionId])`.
+- **BREAKING:** Removed `useApifyProxy`, `apifyProxyGroups` and `apifyProxySession` parameters
+  from all applications in the SDK. Use `proxyConfiguration` in crawlers and `proxyUrl`
+  in `requestAsBrowser` and `Apify.launchPuppeteer`.
+- **BREAKING:** Removed `Apify.utils.getRandomUserAgent()` as it was no longer effective
+  in avoiding bot detection.
+- **BREAKING:** `Request` instances no longer initialize empty properties with `null`,
+  which means that:
+    - empty `errorMessages` are now represented by `[]`, and
+    - empty `loadedUrl`, `payload` and `handledAt` are `undefined`.
+- Add `Apify.createProxyConfiguration()` `async` function to create `ProxyConfiguration`
+  instances. `ProxyConfiguration` itself is not exposed.
+- Add `proxyConfiguration` to `CheerioCrawlerOptions`
+  and `PuppeteerCrawlerOptions`.
+- Add `proxyInfo` to `CheerioHandlePageInputs` and `PuppeteerHandlePageInputs`.
+  You can use this object to retrieve information about the currently used proxy
+  in `Puppeteer` and `Cheerio` crawlers.
+- Add click buttons and scroll up options to `Apify.utils.puppeteer.infiniteScroll()`.
+- Fixed a bug where intercepted requests would never continue.
+- Fixed a bug where `Apify.utils.requestAsBrowser()` would get into redirect loops.
+- Fix `Apify.utils.getMemoryInfo()` crashing the process on AWS Lambda and on systems
+  running in Docker without memory cgroups enabled.
+- Update Puppeteer to 3.3.0.
+
+0.20.4 / 2020-05-11
+====================
+- Add `Apify.utils.waitForRunToFinish()` which simplifies waiting for an actor run to finish.
+- Add standard prefixes to log messages to improve readability and orientation in logs.
+- Add support for `async` handlers in `Apify.utils.puppeteer.addInterceptRequestHandler()`
+- EXPERIMENTAL: Add `cheerioCrawler.use()` function to enable attaching `CrawlerExtension`
+  to the crawler to modify its behavior. A plugin that extends functionality.
+- Fix bug with cookie expiry in `SessionPool`.
+- Fix issues in documentation.
+- Updated `@apify/http-request` to fix issue in the `proxy-agent` package.
+- Updated Puppeteer to 3.0.2
+
+0.20.3 / 2020-04-14
+====================
+- **DEPRECATED:** `CheerioCrawlerOptions.requestOptions` is now deprecated. Please use
+  `CheerioCrawlerOptions.prepareRequestFunction` instead.
+- Add `limit` option to `Apify.utils.enqueueLinks()` for situations when full crawls are not needed.
+- Add `suggestResponseEncoding` and `forceResponseEncoding` options to `CheerioCrawler` to allow
+  users to provide a fall-back or forced encoding of responses in situations where websites
+  serve invalid encoding information in their headers.
+- Add a number of new examples and update existing ones to documentation.
+- Fix duplicate file extensions in `Apify.utils.puppeteer.saveSnapshot()` when used locally.
+- Fix encoding of multi-byte characters in `CheerioCrawler`.
+- Fix formatting of navigation buttons in documentation.
+
+0.20.2 / 2020-03-09
+====================
+- Fix an error where persistence of `SessionPool` would fail if a cookie included invalid
+  `expires` value.
+- Jumping a patch version because of an error in publishing via CI.
+
+0.20.0 / 2020-03-03
 ====================
 - **BREAKING:** `Apify.utils.requestAsBrowser()` no longer aborts request on status code 406
   or when other than `text/html` type is received. Use `options.abortFunction` if you want to
@@ -7,12 +375,29 @@
   is `true` by default and forces the function to use a HTTP parser that is less strict than
   default Node 12 parser, but also less secure. It is needed to be able to bypass certain
   anti-scraping walls and fetch websites that do not comply with HTTP spec.
+- **BREAKING:** `RequestList` now removes all the elements from the `sources` array on
+  initialization. If you need to use the sources somewhere else, make a copy. This change
+  was added as one of several measures to improve memory management of `RequestList`
+  in scenarios with very large amount of `Request` instances.
+- **DEPRECATED:** `RequestListOptions.persistSourcesKey` is now deprecated. Please use
+  `RequestListOptions.persistRequestsKey`.
+- `RequestList.sources` can now be an array of `string` URLs as well.
+- Added `sourcesFunction` to `RequestListOptions`. It enables dynamic fetching of sources
+  and will only be called if persisted `Requests` were not retrieved from key-value store.
+  Use it to reduce memory spikes and also to make sure that your sources are not re-created
+  on actor restarts.
+- Updated `stealth` hiding of `webdriver` to avoid recent detections.
+- `Apify.utils.log` now points to an updated logger instance which prints colored logs (in TTY)
+  and supports overriding with custom loggers.
 - Improved `Apify.launchPuppeteer()` code to prevent triggering bugs in Puppeteer by passing
   more than required options to `puppeteer.launch()`.
-- Documented `BasicCrawler.autoscaledPool` property,
-  and added `CheerioCrawler.autoscaledPool` and `PuppeteerCrawler.autoscaledPool` properties.
+- Documented `BasicCrawler.autoscaledPool` property, and added `CheerioCrawler.autoscaledPool`
+  and `PuppeteerCrawler.autoscaledPool` properties.
+- `SessionPool` now persists state on `teardown`. Before, it only persisted state every minute.
+  This ensures that after a crawler finishes, the state is correctly persisted.
 - Added TypeScript typings and typedef documentation for all entities used throughout SDK.
-- Upgraded `proxy-chain` NPM package from 0.2.7 to 0.3.3
+- Upgraded `proxy-chain` NPM package from 0.2.7 to 0.4.1 and many other dependencies
+- Removed all usage of the now deprecated `request` package.
 
 0.19.1 / 2020-01-30
 ====================

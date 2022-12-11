@@ -14,10 +14,10 @@ ready for processing. With this guide in hand, you should have your own data ext
 ## Intro
 
 The goal of this getting started guide is to provide a step-by-step introduction to all the features of the Apify SDK. It will walk you through
-creating the simplest of crawlers that only print text to console, all the way up to complex systems that crawl pages, interact with them as if a real
+creating the simplest of crawlers that only prints text to console, all the way up to complex systems that crawl pages, interact with them as if a real
 user were sitting in front of a real browser and output structured data.
 
-Since Apify SDK is usable both locally on any computer and on the [Apify Platform](https://my.apify.com), you will be able
+Since Apify SDK is usable both locally on any computer and on the [Apify Platform](../guides/apify-platform), you will be able
 to use the source code in both environments interchangeably. Nevertheless, some initial setup is still required, so choose your preferred starting
 environment and let's get into it.
 
@@ -25,7 +25,7 @@ environment and let's get into it.
 
 To run Apify SDK on your own computer, you need to meet the following pre-requisites first:
 
-1. Have Node.js version 10.17 or higher installed.
+1. Have Node.js version 10.17 or higher, with the exception of Node.js 11, installed.
     - Visit [Node.js website](https://nodejs.org/en/download/) to download or use
       [nvm](https://github.com/creationix/nvm)
 2. Have NPM installed.
@@ -45,7 +45,7 @@ npm -v
 
 The fastest and best way to create new projects with the Apify SDK is to use our own
 [Apify CLI](https://www.npmjs.com/package/apify-cli). This command line tool allows you to create, run and manage Apify
-projects with ease, including their deployment to the [Apify Platform](https://my.apify.com) if you wish to run them in the
+projects with ease, including their deployment to the [Apify platform](../guides/apify-platform) if you wish to run them in the
 cloud after developing them locally.
 
 Let's install the Apify CLI with the following command:
@@ -96,7 +96,7 @@ Did you see all that? If you did, congratulations! You're ready to go!
 Maybe you don't have Node.js installed and don't want the hassle. Or you can't install anything on your computer because you're using a company
 provided one. Or perhaps you'd just prefer to start working in the cloud right away. Well, no worries, we've got you covered.
 
-The [Apify Platform](https://my.apify.com) is the foundational product of
+The [Apify platform](../guides/apify-platform) is the foundational product of
 [Apify](https://apify.com). It's a serverless cloud computing platform, specifically designed for any web automation jobs,
 that may include crawling and scraping, but really works amazing for any batch jobs and long running tasks.
 
@@ -105,7 +105,7 @@ haven't already. Don't forget to verify your email. Without it, you won't be abl
 
 Once you're in, you might be prompted by our in-app help to walk through a step-by-step guide into some of our new features. Feel free to finish that,
 if you'd like, but once you're done, click on the **Actors** tab in the left menu. To read more about **Actors**, see:
-[What is an Actor](/docs/guides/what-is-an-actor).
+[What is an Actor](../guides/apify-platform#what-is-an-actor).
 
 ### Creating a new project
 
@@ -129,8 +129,8 @@ introduce all the Apify SDK classes necessary to make it happen.
 
 ### The general idea
 
-There are 3 crawler classes available for use in the Apify SDK. [`BasicCrawler`](/docs/api/basic-crawler), [`CheerioCrawler`](/docs/api/cheerio-crawler)
-and [`PuppeteerCrawler`](/docs/api/puppeteer-crawler). We'll talk about their differences later. Now, let's talk about what they have in common.
+There are 3 crawler classes available for use in the Apify SDK. [`BasicCrawler`](../api/basic-crawler), [`CheerioCrawler`](../api/cheerio-crawler)
+and [`PuppeteerCrawler`](../api/puppeteer-crawler). We'll talk about their differences later. Now, let's talk about what they have in common.
 
 All the crawlers' general idea is to go to a web page, open it, do some stuff there, save some results and continue to the next page, until it's done
 its job. So each time the crawler needs to find answers to two questions: **Where should I go?** and **What should I do there?**. Answering those two
@@ -138,16 +138,16 @@ questions is the only setup mandatory to run the crawlers.
 
 ### The Where - `Request`, `RequestList` and `RequestQueue`
 
-All crawlers use instances of the [`Request`](/docs/api/request) class to determine where they need to go. Each request may hold a lot of information,
+All crawlers use instances of the [`Request`](../api/request) class to determine where they need to go. Each request may hold a lot of information,
 but at the very least, it must hold a URL - a web page to open. But having only one URL would not make sense for crawling. We need to either have a
 pre-existing list of our own URLs that we wish to visit, perhaps a thousand, or a million, or we need to build this list dynamically as we crawl,
 adding more and more URLs to the list as we progress.
 
-A representation of the pre-existing list is an instance of the [`RequestList`](/docs/api/request-list) class. It is a static, immutable list of URLs and
-other metadata (see the [`Request`](/docs/api/request) object) that the crawler will visit, one by one, retrying whenever an error occurs, until there
+A representation of the pre-existing list is an instance of the [`RequestList`](../api/request-list) class. It is a static, immutable list of URLs and
+other metadata (see the [`Request`](../api/request) object) that the crawler will visit, one by one, retrying whenever an error occurs, until there
 are no more `Requests` to process.
 
-[`RequestQueue`](/docs/api/request-queue) on the other hand, represents a dynamic queue of `Requests`. One that can be updated at runtime by adding more
+[`RequestQueue`](../api/request-queue) on the other hand, represents a dynamic queue of `Requests`. One that can be updated at runtime by adding more
 pages - `Requests` to process. This allows the crawler to open one page, extract interesting URLs, such as links to other pages on the same domain,
 add them to the queue (called _enqueuing_) and repeat this process to build a queue of tens of thousands or more URLs while knowing only a single one
 at the beginning.
@@ -163,7 +163,7 @@ from the page, processing the data, saving it, calling APIs, doing calculations 
 The `handlePageFunction` is provided by you, the user, and invoked automatically by the crawler for each `Request` from either the `RequestList` or
 `RequestQueue`. It always receives a single argument and that is a plain `Object`. Its properties change depending on the used crawler class, but it
 always includes at least the `request` property, which represents the currently crawled `Request` instance (i.e. the URL the crawler is visiting and
-related metadata) and the `autoscaledPool` property, which is an instance of the [`AutoscaledPool`](/docs/api/autoscaled-pool) class and we'll talk about
+related metadata) and the `autoscaledPool` property, which is an instance of the [`AutoscaledPool`](../api/autoscaled-pool) class and we'll talk about
 it in detail later.
 
 ```js
@@ -177,7 +177,7 @@ it in detail later.
 ### Putting it all together
 
 Enough theory! Let's put some of those hard learned facts into practice. We learned above that we need `Requests` and a `handlePageFunction` to setup
-a crawler. We will also use the [`Apify.main()`](/docs/api/apify#main) function. It's not mandatory, but it makes our life easier. We'll
+a crawler. We will also use the [`Apify.main()`](../api/apify#main) function. It's not mandatory, but it makes our life easier. We'll
 learn about it in detail later on.
 
 Let's start super easy. Visit one page, get its title and close. First of all we need to require Apify, to make all of its features available to us:
@@ -205,7 +205,7 @@ Apify.main(async () => {
 > If you're not familiar with the `async` and `await` keywords used in the example, trust that it is a native syntax in modern JavaScript and you can
 > [learn more about it here](https://nikgrozev.com/2017/10/01/async-await/).
 
-The [`requestQueue.addRequest()`](/docs/api/request-queue#addRequest) function automatically converts the plain object we passed to it to a
+The [`requestQueue.addRequest()`](../api/request-queue#addrequest) function automatically converts the plain object we passed to it to a
 `Request` instance, so now we have a `requestQueue` that holds one `request` which points to `https://apify.com`. Now we need the
 `handlePageFunction`.
 
@@ -263,21 +263,21 @@ you learn more about the `CheerioCrawler`.
 ## CheerioCrawler aka jQuery crawler
 
 This is the crawler that we used in our earlier example. Our simplest and also the fastest crawling solution. If you're familiar with `jQuery`, you'll
-understand [`CheerioCrawler`](/docs/api/cheerio-crawler) in minutes. [Cheerio](https://www.npmjs.com/package/cheerio) is
+understand [`CheerioCrawler`](../api/cheerio-crawler) in minutes. [Cheerio](https://www.npmjs.com/package/cheerio) is
 essentially `jQuery` for Node.js. It offers the same API, including the familiar `$` object. You can use it, as you would `jQuery`, for manipulating
 the DOM of a HTML page. In crawling, you'll mostly use it to select the right elements and extract their text values - the data you're interested in.
 But `jQuery` runs in a browser and attaches directly to the browser's DOM. Where does `cheerio` get its HTML? This is where the `Crawler` part of
-[`CheerioCrawler`](/docs/api/cheerio-crawler) comes in.
+[`CheerioCrawler`](../api/cheerio-crawler) comes in.
 
 ### Overview
 
-[`CheerioCrawler`](/docs/api/cheerio-crawler) crawls by making plain HTTP requests to the provided URLs. As you remember from the previous section, the
-URLs are fed to the crawler using either the [`RequestList`](/docs/api/cheerio-crawler) or the [`RequestQueue`](/docs/api/cheerio-crawler). The HTTP responses
+[`CheerioCrawler`](../api/cheerio-crawler) crawls by making plain HTTP requests to the provided URLs. As you remember from the previous section, the
+URLs are fed to the crawler using either the [`RequestList`](../api/cheerio-crawler) or the [`RequestQueue`](../api/cheerio-crawler). The HTTP responses
 it gets back are HTML pages, the same pages you would get in your browser when you first load a URL.
 
 > Note, however, that modern web pages often do not serve all of their content in the first HTML response, but rather the first HTML contains links to
 > other resources such as CSS and JavaScript that get downloaded afterwards and together they create the final page. See our
-> [`PuppeteerCrawler`](/docs/api/puppeteer-crawler) to crawl those.
+> [`PuppeteerCrawler`](../api/puppeteer-crawler) to crawl those.
 
 Once the page's HTML is retrieved, the crawler will pass it to [Cheerio](https://www.npmjs.com/package/cheerio) for
 parsing. The result is the typical `$` function, which should be familiar to `jQuery` users. You can use this `$` to do all sorts of lookups and
@@ -300,15 +300,15 @@ $('[href]')
 > This is not to show that Cheerio is better than plain browser JavaScript. Some might actually prefer the more expressive way plain JS provides.
 > Unfortunately, the browser JavaScript methods are not available in Node.js, so Cheerio is our best bet to do the parsing.
 
-### When to use [`CheerioCrawler`](/docs/api/cheerio-crawler)
+### When to use `CheerioCrawler`
 
 Even though using `CheerioCrawler` is extremely easy, it probably will not be your first choice for most kinds of crawling or scraping in production
 environments. Since most websites nowadays use modern JavaScript to create rich, responsive and data driven user experiences, the plain HTTP requests
 the crawler uses may just fall short of your needs.
 
-But `CheerioCrawler` is far from useless! It really shines when you need to do extremely high workloads. With just 4 GBs of memory and a single CPU
+But [`CheerioCrawler`](../api/cheerio-crawler) is far from useless! It really shines when you need to do extremely high workloads. With just 4 GBs of memory and a single CPU
 core, you can scrape 500 or more pages a minute! _(assuming each page contains approximately 400KB of HTML)_ To get this high with a full browser
-scraper, such as the [`PuppeteerCrawler`](/docs/api/puppeteer-crawler), you'd need significantly more computing power.
+scraper, such as the [`PuppeteerCrawler`](../api/puppeteer-crawler), you'd need significantly more computing power.
 
 **Advantages:**
 
@@ -324,7 +324,7 @@ scraper, such as the [`PuppeteerCrawler`](/docs/api/puppeteer-crawler), you'd ne
 -   May easily overload the target website with requests
 -   Does not enable any manipulation of the website before scraping
 
-### Basic use of [`CheerioCrawler`](/docs/api/cheerio-crawler)
+### Basic use of `CheerioCrawler`
 
 Now that we have an idea of the crawler's inner workings, let's build one. We'll use the example from the previous section and improve on it by
 letting it truly crawl the page, finding new links as it goes, enqueuing them into the `RequestQueue` and then scraping them.
@@ -420,7 +420,7 @@ const sameDomainLinks = absoluteUrls.filter(url => url.href.startsWith(ourDomain
 
 #### Enqueueing links to `RequestQueue`
 
-This should be easy, because we already did that [earlier](#puttingitalltogether), remember? Just call `requestQueue.addRequest()` for all the new
+This should be easy, because we already did that [earlier](#putting-it-all-together), remember? Just call `requestQueue.addRequest()` for all the new
 links. This will add them to the end of the queue for processing.
 
 ```js
@@ -516,8 +516,8 @@ No matter if you followed along with our coding or just copy pasted the resultin
 should see the crawler log the **title** of the first page, then the **enqueueing** message showing number of URLs, followed by the **title** of the
 first enqueued page and so on and so on.
 
-> If you need help with running the code, refer back to the chapters on environment setup: [Setting up locally](#settinguplocally) and
-> [Setting up on the Apify Platform](#settingupontheapifyplatform).
+> If you need help with running the code, refer back to the chapters on environment setup: [Setting up locally](#setting-up-locally) and
+> [Setting up on the Apify Platform](#setting-up-on-the-apify-platform).
 
 ## Using Apify SDK to enqueue links like a boss
 
@@ -543,7 +543,7 @@ It also allows you to modify the resulting `Requests` to match your crawling nee
 
 `enqueueLinks` is quite a powerful function so, like crawlers, it gets its arguments from an options object. This is useful, because you don't have to
 remember their order! But also because we can easily extend its API and add new features. You can
-[find the full reference here](/docs/api/utils#enqueueLinks).
+[find the full reference here](../api/utils#enqueuelinks).
 
 We suggest using ES6 destructuring to grab the `enqueueLinks()` function off of the `utils` object, so you don't have to type `Apify.utils` all the
 time.
@@ -672,7 +672,7 @@ That's been quite a lot of theory and examples. We might as well put it to pract
 two arguments. The source, in our case the `$` object, and the destination - the `requestQueue`. To filter links, we need to add a third argument:
 `pseudoUrls`.
 
-The `options.pseudoUrls` argument is always an `Array`, but its contents can take on many forms. [See the reference](/docs/api/utils#enqueueLinks)
+The `options.pseudoUrls` argument is always an `Array`, but its contents can take on many forms. [See the reference](../api/utils#enqueueLinks)
 for all of them. Since we just need to filter out same domain links, we'll keep it simple and use a pseudo-URL `string`.
 
 ```js
@@ -811,7 +811,7 @@ And that's it! No more parsing the links from HTML using Cheerio, filtering them
 getting your data, while leaving the mundane crawling management to your tools.
 
 `Apify.utils.enqueueLinks()` has a lot more tricks up its sleeve. Make sure to check out the
-[reference documentation](/docs/api/utils#enqueueLinks) to see what else it can do for you. Namely the feature to prepopulate the `Request`
+[reference documentation](../api/utils#enqueueLinks) to see what else it can do for you. Namely the feature to prepopulate the `Request`
 instances it creates with `userData` of your choice is extremely useful!
 
 ## Getting some real world data
@@ -856,10 +856,10 @@ scrape all actors (see the `Show` dropdown) in all categories (which can be foun
 3.  Unique identifier (such as `apify/web-scraper`)
 4.  Title
 5.  Description
-6.  Last run date
+6.  Last modification date
 7.  Number of runs
 
-We can see that some of the information is available directly on the list page, but for details such as "Last run date" or "Number of runs" we'll need
+We can see that some of the information is available directly on the list page, but for details such as "Last modification date" or "Number of runs" we'll need
 to open the actor detail pages too.
 
 ![data to scrape](/img/getting-started/scraping-practice.jpg 'Overview of data to be scraped.')
@@ -1171,7 +1171,7 @@ out ways to access it.
 3. Unique identifier (such as `apify/web-scraper`)
 4. Title
 5. Description
-6. Last run date
+6. Last modification date
 7. Number of runs
 
 ![data to scrape](/img/getting-started/scraping-practice.jpg 'Overview of data to be scraped.')
@@ -1195,7 +1195,7 @@ const owner = urlArr[0]; // 'apify'
 > would be too large to bear, it's always better to make the dataset as readable as possible. Someone might want to filter by `owner` for example and
 > keeping only the `URL` in the dataset would make this complicated without using additional tools.
 
-#### Scraping Title, Description, Last run date and Number of runs
+#### Scraping Title, Description, Last modification date and Number of runs
 
 Now it's time to add more data to the results. Let's open one of the actor detail pages in the Store, for example the
 [`apify/web-scraper`](https://apify.com/apify/web-scraper) page and use our DevTools-Fu to figure out how to get the title of the actor.
@@ -1226,41 +1226,37 @@ return {
 
 Getting the actor's description is a little more involved, but still pretty straightforward. We can't just simply search for a `<p>` tag, because
 there's a lot of them in the page. We need to narrow our search down a little. Using the DevTools we find that the actor description is nested within
-the `<header>` element too, same as the title. Sadly, we're still left with two `<p>` tags. To finally select only the
-description, we choose the `<p>` tag that has a `class` that starts with `Text__Paragraph`.
+the `<header>` element too, same as the title. Moreover, the actual description is nested inside a `<span>` tag with a class `actor-description`.
 
 ![actor description selector](/img/getting-started/description.jpg 'Finding actor description in DevTools.')
 
 ```js
 return {
     title: $('header h1').text(),
-    description: $('header p[class^=Text__Paragraph]').text(),
+    description: $('header span.actor-description').text(),
 };
 ```
 
-##### Last run date
+##### Last modification date
 
-The DevTools tell us that the `lastRunDate` can be found in the second of the two `<time>` elements in the page.
+The DevTools tell us that the `modifiedDate` can be found in the `<time>` element inside `<ul class="ActorHeader-stats">`.
 
-![actor last run date selector](/img/getting-started/last-run-date.jpg 'Finding actor last run date in DevTools.')
+![actor last modification date selector](/img/getting-started/modified-date.jpg 'Finding actor last modification date in DevTools.')
 
 ```js
 return {
     title: $('header h1').text(),
-    description: $('header p[class^=Text__Paragraph]').text(),
-    lastRunDate: new Date(
+    description: $('header span.actor-description').text(),
+    modifiedDate: new Date(
         Number(
-            $('time')
-                .eq(1)
-                .attr('datetime'),
+            $('ul.ActorHeader-stats time').attr('datetime'),
         ),
     ),
 };
 ```
 
-It might look a little too complex at first glance, but let me walk you through it. We find all the `<time>` elements. There are two, so we grab the
-second one using the `.eq(1)` call (it's zero indexed) and then we read its `datetime` attribute, because that's where a unix timestamp is stored as a
-`string`.
+It might look a little too complex at first glance, but let me walk you through it. We find the right `<time>` element,
+and then we read its `datetime` attribute, because that's where a unix timestamp is stored as a `string`.
 
 But we would much rather see a readable date in our results, not a unix timestamp, so we need to convert it. Unfortunately the `new Date()`
 constructor will not accept a `string`, so we cast the `string` to a `number` using the `Number()` function before actually calling `new Date()`.
@@ -1274,25 +1270,29 @@ transformation on the result.
 ```js
 return {
     title: $('header h1').text(),
-    description: $('header p[class^=Text__Paragraph]').text(),
-    lastRunDate: new Date(
+    description: $('header span.actor-description').text(),
+    modifiedDate: new Date(
         Number(
-            $('time')
-                .eq(1)
-                .attr('datetime'),
+            $('ul.ActorHeader-stats time').attr('datetime'),
         ),
     ),
     runCount: Number(
-        $('ul.stats li:nth-of-type(3)')
+        $('ul.ActorHeader-stats > li:nth-of-type(3)')
             .text()
-            .match(/\d+/)[0],
+            .match(/[\d,]+/)[0]
+            .replace(',', ''),
     ),
 };
 ```
 
-The `ul.stats > li:nth-of-type(3)` looks complicated, but it only reads that we're looking for a `<ul class="stats ...">` element and within that
+The `ul.ActorHeader-stats > li:nth-of-type(3)` looks complicated, but it only reads that we're looking for a `<ul class="ActorHeader-stats ...">` element and within that
 element we're looking for the third `<li>` element. We grab its text, but we're only interested in the number of runs. So we parse the number out
 using a regular expression, but its type is still a `string`, so we finally convert the result to a `number` by wrapping it with a `Number()` call.
+
+> The numbers are formatted with commas as thousands separators (e.g. `'1,234,567'`), so to extract it, we
+> first use regular expression `/[\d,]+/` - it will search for consecutive number or comma characters.
+> Then we extract the match via `.match(/[\d,]+/)[0]` and finally remove the commas by calling `.replace(',', '')`.
+> This will give us a string (e.g. `'1234567'`) that can be converted via `Number` function.
 
 And there we have it! All the data we needed in a single object. For the sake of completeness, let's add the properties we parsed from the URL earlier
 and we're good to go.
@@ -1305,18 +1305,17 @@ const results = {
     uniqueIdentifier: urlArr.join('/'),
     owner: urlArr[0],
     title: $('header h1').text(),
-    description: $('header p[class^=Text__Paragraph]').text(),
-    lastRunDate: new Date(
+    description: $('header span.actor-description').text(),
+    modifiedDate: new Date(
         Number(
-            $('time')
-                .eq(1)
-                .attr('datetime'),
+            $('ul.ActorHeader-stats time').attr('datetime'),
         ),
     ),
     runCount: Number(
-        $('ul.stats li:nth-of-type(3)')
+        $('ul.ActorHeader-stats > li:nth-of-type(3)')
             .text()
-            .match(/\d+/)[0],
+            .match(/[\d,]+/)[0]
+            .replace(',', ''),
     ),
 };
 
@@ -1356,18 +1355,17 @@ Apify.main(async () => {
                     uniqueIdentifier: urlArr.join('/'),
                     owner: urlArr[0],
                     title: $('header h1').text(),
-                    description: $('header p[class^=Text__Paragraph]').text(),
-                    lastRunDate: new Date(
+                    description: $('header span.actor-description').text(),
+                    modifiedDate: new Date(
                         Number(
-                            $('time')
-                                .eq(1)
-                                .attr('datetime'),
+                            $('ul.ActorHeader-stats time').attr('datetime'),
                         ),
                     ),
                     runCount: Number(
-                        $('ul.stats li:nth-of-type(3)')
+                        $('ul.ActorHeader-stats > li:nth-of-type(3)')
                             .text()
-                            .match(/\d+/)[0],
+                            .match(/[\d,]+/)[0]
+                            .replace(',', ''),
                     ),
                 };
                 console.log('RESULTS', results);
@@ -1440,18 +1438,17 @@ Apify.main(async () => {
                     uniqueIdentifier: urlArr.join('/'),
                     owner: urlArr[0],
                     title: $('header h1').text(),
-                    description: $('header p[class^=Text__Paragraph]').text(),
-                    lastRunDate: new Date(
+                    description: $('header span.actor-description').text(),
+                    modifiedDate: new Date(
                         Number(
-                            $('time')
-                                .eq(1)
-                                .attr('datetime'),
+                            $('ul.ActorHeader-stats time').attr('datetime'),
                         ),
                     ),
                     runCount: Number(
-                        $('ul.stats li:nth-of-type(3)')
+                        $('ul.ActorHeader-stats > li:nth-of-type(3)')
                             .text()
-                            .match(/\d+/)[0],
+                            .match(/[\d,]+/)[0]
+                            .replace(',', ''),
                     ),
                 };
                 await Apify.pushData(results);
@@ -1479,7 +1476,7 @@ Apify.main(async () => {
 
 #### What's `Apify.pushData()`
 
-[`Apify.pushData()`](/docs/api/apify#pushData) is a helper function that saves data to the default [`Dataset`](/docs/api/dataset). `Dataset` is a
+[`Apify.pushData()`](../api/apify#pushdata) is a helper function that saves data to the default [`Dataset`](../api/dataset). `Dataset` is a
 storage designed to hold virtually unlimited amount of data in a format similar to a table. Each time you call `Apify.pushData()` a new row in the
 table is created, with the property names serving as column titles.
 
@@ -1524,7 +1521,7 @@ actor code.
 #### Meet the `INPUT`
 
 `INPUT` is just a convention on how we call the actor's input. Because there's no magic in actors, just features, the `INPUT` is actually nothing more
-than a key in the default [`KeyValueStore`](/docs/api/key-value-store) that's, by convention, used as input on Apify Platform. Also by convention, the
+than a key in the default [`KeyValueStore`](../api/key-value-store) that's, by convention, used as input on Apify Platform. Also by convention, the
 `INPUT` is mostly expected to be of `Content-Type: application/json`.
 
 We will not go into `KeyValueStore` details here, but for the sake of `INPUT` you need to remember that there is a function that helps you get it.
@@ -1534,12 +1531,12 @@ const input = await Apify.getInput();
 ```
 
 On the Apify Platform, the actor's input that you can set in the Console is automatically saved to the default `KeyValueStore` under the key `INPUT`
-and by calling [`Apify.getInput()`](/docs/api/apify#getValue) you retrieve the value from the `KeyValueStore`.
+and by calling [`Apify.getInput()`](../api/apify#getvalue) you retrieve the value from the `KeyValueStore`.
 
 Running locally, you need to place an `INPUT.json` file in your default key value store for this to work.
 
 ```
-{PROJECT_FOLDER}/apify_storage/key-value-stores/default/INPUT.json
+{PROJECT_FOLDER}/apify_storage/key_value_stores/default/INPUT.json
 ```
 
 #### Use `INPUT` to seed our actor with categories
@@ -1690,18 +1687,17 @@ exports.DETAIL = async ({ $, request }) => {
         uniqueIdentifier: urlArr.join('/'),
         owner: urlArr[0],
         title: $('header h1').text(),
-        description: $('header p[class^=Text__Paragraph]').text(),
-        lastRunDate: new Date(
+        description: $('header span.actor-description').text(),
+        modifiedDate: new Date(
             Number(
-                $('time')
-                    .eq(1)
-                    .attr('datetime'),
+                $('ul.ActorHeader-stats time').attr('datetime'),
             ),
         ),
         runCount: Number(
-            $('ul.stats li:nth-of-type(3)')
+            $('ul.ActorHeader-stats > li:nth-of-type(3)')
                 .text()
-                .match(/\d+/)[0],
+                .match(/[\d,]+/)[0]
+                .replace(',', ''),
         ),
     };
 
@@ -1720,7 +1716,7 @@ your logic separate. Less code in a single file means less code you need to thin
 
 #### Using `Apify.utils.log` instead of `console.log`
 
-We wont go into great lengths here to talk about `utils.log` here, because you can read [it all in the documentation](/docs/api/log), but there's just
+We wont go into great lengths here to talk about `utils.log` here, because you can read [it all in the documentation](../api/log), but there's just
 one thing that we need to stress: **log levels**.
 
 `utils.log` enables you to use different log levels, such as `log.debug`, `log.info` or `log.warning`. It not only makes your log more readable, but

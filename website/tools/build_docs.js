@@ -1,16 +1,18 @@
 const decamelize = require('decamelize');
-const fs = require('fs');
+const fs = require('fs-extra');
 const jsdoc2md = require('jsdoc-to-markdown'); // eslint-disable-line
 const path = require('path');
 const prettier = require('prettier'); // eslint-disable-line
-const readline = require('readline');
-const { promisify } = require('util');
+const got = require('got');
 const prettierConfig = require('./prettier.config');
+const sidebars = require('../sidebars.json');
+const { readStreamToString } = require('apify-shared/streams_utilities');  // eslint-disable-line
 
-const writeFile = promisify(fs.writeFile);
-const BASE_URL = '/docs';
+const BASE_URL = '..';
+const DOCS_DIR = path.join(__dirname, '..', '..', 'docs');
+const EXAMPLES_DIR_NAME = path.join(DOCS_DIR, 'examples');
+const EXAMPLES_REPO = 'https://api.github.com/repos/apify/actor-templates/contents/dist/examples';
 
-/* eslint-disable no-shadow */
 
 const classNames = [];
 const namespaces = [];
@@ -21,7 +23,7 @@ const toId = (name) => {
 };
 
 const getHeader = (title) => {
-    const prefix = /puppeteer|social|log/.test(title) ? 'utils.' : '';
+    const prefix = /playwright|puppeteer|social|log/.test(title) ? 'utils.' : '';
     const id = toId(title);
     return `---\nid: ${id}\ntitle: ${prefix}${title}\n---\n`;
 };
@@ -35,6 +37,7 @@ const getRenderOptions = (template, data) => ({
     'property-list-format': 'list',
     'heading-depth': 1,
     helper: [path.join(__dirname, 'helpers.js')],
+    plugins: ["jsdoc-plugin-intersection"],
     partial: [
         path.join(__dirname, 'partials', 'params-list.hbs'),
         path.join(__dirname, 'partials', 'properties-list.hbs'),
@@ -46,23 +49,6 @@ const getRenderOptions = (template, data) => ({
         path.join(__dirname, 'partials', 'header.hbs'),
     ],
 });
-
-const readFileFromLine = async (path, lineNumber = 1) => {
-    return new Promise((resolve, reject) => {
-        const output = [];
-        const rl = readline.createInterface({
-            input: fs.createReadStream(path),
-            crlfDelay: Infinity,
-        });
-        let lineCounter = 0;
-        rl.on('line', (line) => {
-            lineCounter++;
-            if (lineCounter >= lineNumber) output.push(line);
-        });
-        rl.on('close', () => resolve(output.join('\n')));
-        rl.on('error', err => reject(err));
-    });
-};
 
 const getLinkToEntity = (entityName, entityMap) => {
     const entity = entityMap.get(entityName);
@@ -134,39 +120,65 @@ const generateFinalMarkdown = (title, text, entityMap) => {
     return prettier.format(header + text, prettierConfig);
 };
 
+async function getExamplesFromRepo() {
+    await fs.emptyDir(EXAMPLES_DIR_NAME);
+    process.chdir(EXAMPLES_DIR_NAME);
+    const body = await got(EXAMPLES_REPO).json();
+    const builtExamples = await buildExamples(body);
+    await addExamplesToSidebars(builtExamples);
+}
+
+async function buildExamples(exampleLinks) {
+    const examples = [];
+    for (const example of exampleLinks) {
+        const fileContent = await got(example.download_url).text();
+        console.log(`Rendering example ${example.name}`);
+        const markdown = prettier.format(fileContent, prettierConfig);
+        fs.writeFileSync(example.name, markdown);
+        const exampleName = example.name.split('.')[0];
+        examples.push(`examples/${exampleName.replace(/_/g, '-')}`);
+    }
+    return examples;
+}
+
+async function addExamplesToSidebars(examples) {
+    console.log('Saving examples to sidebars.json');
+    sidebars.docs.Examples = examples;
+    fs.writeFileSync(path.join(__dirname, '..', 'sidebars.json'), JSON.stringify(sidebars, null, 4));
+}
+
+
 const main = async () => {
     /* input and output paths */
     const sourceFiles = path.join(__dirname, '..', '..', 'src', '**', '*.js');
-    const exampleFiles = path.join(__dirname, '..', '..', 'examples', '**', '*.js');
     const sourceFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'api');
     const typeFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'typedefs');
-    const exampleFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'examples');
 
     /* get template data */
-    const templateData = await jsdoc2md.getTemplateData({ files: sourceFiles });
-    const exampleData = await jsdoc2md.getTemplateData({ files: exampleFiles });
-
-    // handle examples
-    const examplePromises = exampleData.map(async (example) => {
-        const { description, meta: { filename, path: filepath, lineno } } = example;
-        const code = await readFileFromLine(path.join(filepath, filename), lineno);
-        const sep = '```';
-        const codeblock = `${sep}javascript\n${code}\n${sep}`;
-
-        const title = filename.split('.')[0].split('_').map(word => `${word[0].toUpperCase()}${word.substr(1)}`).join(' ');
-        const header = getHeader(title);
-        const markdown = prettier.format(`${header}\n${description}\n${codeblock}`, prettierConfig);
-        await writeFile(path.join(exampleFilesOutputDir, `${title.replace(/\s/g, '')}.md`), markdown);
+    let templateData = await jsdoc2md.getTemplateData({
+        files: sourceFiles,
+        configure: path.join(__dirname, 'conf.json'),
     });
 
-    await Promise.all(examplePromises);
+    // handle examples
+    await getExamplesFromRepo();
+
+    const EMPTY = {};
 
     /* reduce templateData to an array of class names */
     templateData.forEach((identifier) => {
-        if (identifier.kind === 'class' && !identifier.ignore) classNames.push(identifier.name);
-        if (identifier.kind === 'namespace' && !identifier.ignore) namespaces.push(identifier.name);
-        if (identifier.kind === 'typedef' && !identifier.ignore) typedefs.push(identifier.name);
+        if (identifier.kind === 'class' && !identifier.ignore && !identifier.private) {
+            classNames.push(identifier.name);
+            if (identifier.hideconstructor) {
+                const idx = templateData.findIndex(i => i.id === `${identifier.name}()`);
+                templateData[idx] = EMPTY;
+            }
+        }
+        if (identifier.kind === 'namespace' && !identifier.ignore && !identifier.private) namespaces.push(identifier.name);
+        if (identifier.kind === 'typedef' && !identifier.ignore && !identifier.private) typedefs.push(identifier.name);
     });
+
+    templateData = templateData.filter(d => d !== EMPTY);
 
     // build a map of all available entities for link generation.
     // Apify needs to be added manually since its actually a module
@@ -197,34 +209,36 @@ const main = async () => {
 
     const output = jsdoc2md.renderSync(getRenderOptions(template, finalData));
     const markdown = generateFinalMarkdown(mainModule, output, entityMap);
-    fs.writeFileSync(path.resolve(sourceFilesOutputDir, `${mainModule}.md`), markdown);
+    await fs.outputFile(path.resolve(sourceFilesOutputDir, `${mainModule}.md`), markdown);
 
     // create a doc file file for each class
-    classNames.forEach((className) => {
+    const cPs = classNames.map(async (className) => {
         const template = `{{#class name="${className}"}}{{>docs}}{{/class}}`;
         console.log(`Rendering ${className}, template: ${template}`); // eslint-disable-line no-console
         const output = jsdoc2md.renderSync(getRenderOptions(template, templateData));
         const markdown = generateFinalMarkdown(className, output, entityMap);
-        fs.writeFileSync(path.resolve(sourceFilesOutputDir, `${className}.md`), markdown);
+        await fs.outputFile(path.resolve(sourceFilesOutputDir, `${className}.md`), markdown);
     });
 
     // create a doc file file for each namespace
-    namespaces.forEach((name) => {
+    const nPs = namespaces.map(async (name) => {
         const template = `{{#namespace name="${name}"}}{{>docs}}{{/namespace}}`;
         console.log(`Rendering ${name}, template: ${template}`); // eslint-disable-line no-console
         const output = jsdoc2md.renderSync(getRenderOptions(template, templateData));
         const markdown = generateFinalMarkdown(name, output, entityMap);
-        fs.writeFileSync(path.resolve(sourceFilesOutputDir, `${name}.md`), markdown);
+        await fs.outputFile(path.resolve(sourceFilesOutputDir, `${name}.md`), markdown);
     });
 
     // create a doc file for each type
-    typedefs.forEach((name) => {
+    const tPs = typedefs.map(async (name) => {
         const template = `{{#identifier name="${name}"}}{{>docs}}{{/identifier}}`;
         console.log(`Rendering ${name}, template: ${template}`); // eslint-disable-line no-console
         const output = jsdoc2md.renderSync(getRenderOptions(template, templateData));
         const markdown = generateFinalMarkdown(name, output, entityMap);
-        fs.writeFileSync(path.resolve(typeFilesOutputDir, `${name}.md`), markdown);
+        await fs.outputFile(path.resolve(typeFilesOutputDir, `${name}.md`), markdown);
     });
+
+    await Promise.all([...cPs, ...nPs, ...tPs]);
 };
 
-main();
+main().then(() => console.log('All docs built successfully.'));

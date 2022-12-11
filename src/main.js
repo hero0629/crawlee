@@ -1,20 +1,24 @@
 import { EventEmitter } from 'events';
 import log from './utils_log';
-import { main, getEnv, call, callTask, getApifyProxyUrl, metamorph, addWebhook } from './actor';
+import { main, getEnv, call, callTask, metamorph, addWebhook } from './actor';
 import AutoscaledPool from './autoscaling/autoscaled_pool';
 import BasicCrawler from './crawlers/basic_crawler';
 import CheerioCrawler from './crawlers/cheerio_crawler';
-import { pushData, openDataset } from './dataset';
+import { pushData, openDataset } from './storages/dataset';
 import events, { initializeEvents, stopEvents } from './events';
-import { getValue, setValue, getInput, openKeyValueStore } from './key_value_store';
-import { launchPuppeteer } from './puppeteer';
+import { getValue, setValue, getInput, openKeyValueStore } from './storages/key_value_store';
+import { launchPuppeteer } from './browser_launchers/puppeteer_launcher';
+import { launchPlaywright } from './browser_launchers/playwright_launcher';
+import BrowserCrawler from './crawlers/browser_crawler';
 import PuppeteerCrawler from './crawlers/puppeteer_crawler';
-import PuppeteerPool from './puppeteer_pool';
+import PlaywrightCrawler from './crawlers/playwright_crawler';
 import Request from './request';
 import { RequestList, openRequestList } from './request_list';
-import { openRequestQueue } from './request_queue';
-import { apifyClient, getMemoryInfo, isAtHome, publicUtils } from './utils';
+import { createProxyConfiguration } from './proxy_configuration';
+import { openRequestQueue } from './storages/request_queue';
+import { newClient, getMemoryInfo, isAtHome, publicUtils } from './utils';
 import { puppeteerUtils } from './puppeteer_utils';
+import { playwrightUtils } from './playwright_utils';
 import { socialUtils } from './utils_social';
 import { enqueueLinks } from './enqueue_links/enqueue_links';
 import PseudoUrl from './pseudo_url';
@@ -28,6 +32,7 @@ EventEmitter.defaultMaxListeners = 50;
 
 const exportedUtils = Object.assign(publicUtils, {
     puppeteer: puppeteerUtils,
+    playwright: playwrightUtils,
     social: socialUtils,
     log,
     enqueueLinks,
@@ -38,7 +43,12 @@ const exportedUtils = Object.assign(publicUtils, {
  * The following section describes all functions and properties provided by the `apify` package,
  * except individual classes and namespaces that have their separate, detailed, documentation pages
  * accessible from the left sidebar. To learn how Apify SDK works, we suggest following
- * the [Getting Started](/docs/guides/getting-started) tutorial.
+ * the [Getting Started](../guides/getting-started) tutorial.
+ *
+ * **Important:**
+ * > The following functions: `addWebhook`, `call`, `callTask` and `newClient` invoke features of the
+ * > [Apify platform](../guides/apify-platform) and require your scripts to be authenticated.
+ * > See the [authentication guide](../guides/apify-platform#logging-into-apify-platform-from-apify-sdk) for instructions.
  *
  * @module Apify
  */
@@ -49,9 +59,8 @@ export {
     callTask,
     metamorph,
     getMemoryInfo,
-    getApifyProxyUrl,
     isAtHome,
-    apifyClient as client,
+    newClient,
     addWebhook,
 
     AutoscaledPool,
@@ -73,8 +82,10 @@ export {
     openKeyValueStore,
 
     launchPuppeteer,
-    PuppeteerPool,
+    launchPlaywright,
+    BrowserCrawler,
     PuppeteerCrawler,
+    PlaywrightCrawler,
 
     PseudoUrl,
 
@@ -84,6 +95,8 @@ export {
     openRequestQueue,
 
     openSessionPool,
+
+    createProxyConfiguration,
 
     LiveViewServer,
     Session,

@@ -1,5 +1,5 @@
+import ow from 'ow';
 import * as _ from 'underscore';
-import { checkParamOrThrow } from 'apify-client/build/utils';
 import log from './utils_log';
 import Request, { RequestOptions } from './request'; // eslint-disable-line import/named,no-unused-vars
 
@@ -65,11 +65,9 @@ const parsePurl = (purl) => {
  *
  * For example, a PURL `http://www.example.com/pages/[(\w|-)*]` will match all of the following URLs:
  *
- * <ul>
- *     <li><code>http://www.example.com/pages/</code></li>
- *     <li><code>http://www.example.com/pages/my-awesome-page</code></li>
- *     <li><code>http://www.example.com/pages/something</code></li>
- * </ul>
+ * - `http://www.example.com/pages/`
+ * - `http://www.example.com/pages/my-awesome-page`
+ * - `http://www.example.com/pages/something`
  *
  * Be careful to correctly escape special characters in the pseudo-URL string.
  * If either `[` or `]` is part of the normal query string, it must be encoded as `[\x5B]` or `[\x5D]`,
@@ -110,8 +108,8 @@ class PseudoUrl {
      *   by the {@link utils#enqueueLinks} function.
      */
     constructor(purl, requestTemplate = {}) {
-        checkParamOrThrow(purl, 'purl', 'String|RegExp');
-        checkParamOrThrow(requestTemplate, 'requestTemplate', 'Object');
+        ow(purl, ow.any(ow.string, ow.regExp));
+        ow(requestTemplate, ow.object);
 
         if (purl instanceof RegExp) {
             this.regex = purl;
@@ -141,7 +139,7 @@ class PseudoUrl {
      * be merged together, with the `userData` property having preference over the template.
      * This enables dynamic overriding of the template.
      *
-     * @param {(string|Object)} urlOrProps
+     * @param {(string|Object<string, *>)} urlOrProps
      * @return {Request}
      */
     createRequest(urlOrProps) {

@@ -1,15 +1,6 @@
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import * as _ from 'underscore';
+import ow from 'ow';
 import Snapshotter from './snapshotter'; // eslint-disable-line import/no-duplicates
 import { weightedAvg } from '../utils';
-
-const DEFAULT_OPTIONS = {
-    currentHistorySecs: 5,
-    maxMemoryOverloadedRatio: 0.2,
-    maxEventLoopOverloadedRatio: 0.4,
-    maxCpuOverloadedRatio: 0.4,
-    maxClientOverloadedRatio: 0.3,
-};
 
 // TODO yin: Add `@property clientInfo` as in `SystemStatus._isSystemIdle()`
 /**
@@ -18,10 +9,10 @@ const DEFAULT_OPTIONS = {
  * @typedef SystemInfo
  * @property {boolean} isSystemIdle
  *   If true, system is being overloaded.
- * @property {object} memInfo
+ * @property {Object<string, *>} memInfo
  *   Memory
- * @property {object} eventLoopInfo
- * @property {object} cpuInfo
+ * @property {Object<string, *>} eventLoopInfo
+ * @property {Object<string, *>} cpuInfo
  */
 
 /**
@@ -32,13 +23,13 @@ const DEFAULT_OPTIONS = {
  * @property {number} [maxMemoryOverloadedRatio=0.2]
  *   Sets the maximum ratio of overloaded snapshots in a memory sample.
  *   If the sample exceeds this ratio, the system will be overloaded.
- * @property {number} [maxEventLoopOverloadedRatio=0.2]
+ * @property {number} [maxEventLoopOverloadedRatio=0.6]
  *   Sets the maximum ratio of overloaded snapshots in an event loop sample.
  *   If the sample exceeds this ratio, the system will be overloaded.
  * @property {number} [maxCpuOverloadedRatio=0.4]
  *   Sets the maximum ratio of overloaded snapshots in a CPU sample.
  *   If the sample exceeds this ratio, the system will be overloaded.
- * @property {number} [maxClientOverloadedRatio=0.2]
+ * @property {number} [maxClientOverloadedRatio=0.3]
  *   Sets the maximum ratio of overloaded snapshots in a Client sample.
  *   If the sample exceeds this ratio, the system will be overloaded.
  * @property {Snapshotter} [snapshotter]
@@ -71,21 +62,23 @@ class SystemStatus {
      * @param {SystemStatusOptions} [options] All `SystemStatus` configuration options.
      */
     constructor(options = {}) {
-        const {
-            currentHistorySecs,
-            maxMemoryOverloadedRatio,
-            maxEventLoopOverloadedRatio,
-            maxCpuOverloadedRatio,
-            maxClientOverloadedRatio,
-            snapshotter,
-        } = _.defaults({}, options, DEFAULT_OPTIONS);
+        ow(options, ow.object.exactShape({
+            currentHistorySecs: ow.optional.number,
+            maxMemoryOverloadedRatio: ow.optional.number,
+            maxEventLoopOverloadedRatio: ow.optional.number,
+            maxCpuOverloadedRatio: ow.optional.number,
+            maxClientOverloadedRatio: ow.optional.number,
+            snapshotter: ow.optional.object,
+        }));
 
-        checkParamOrThrow(currentHistorySecs, 'options.currentHistorySecs', 'Number');
-        checkParamOrThrow(maxMemoryOverloadedRatio, 'options.maxMemoryOverloadedRatio', 'Number');
-        checkParamOrThrow(maxEventLoopOverloadedRatio, 'options.maxEventLoopOverloadedRatio', 'Number');
-        checkParamOrThrow(maxCpuOverloadedRatio, 'options.maxCpuOverloadedRatio', 'Number');
-        checkParamOrThrow(maxClientOverloadedRatio, 'options.maxClientOverloadedRatio', 'Number');
-        checkParamOrThrow(snapshotter, 'options.snapshotter', 'Maybe Object');
+        const {
+            currentHistorySecs = 5,
+            maxMemoryOverloadedRatio = 0.2,
+            maxEventLoopOverloadedRatio = 0.6,
+            maxCpuOverloadedRatio = 0.4,
+            maxClientOverloadedRatio = 0.3,
+            snapshotter,
+        } = options;
 
         this.currentHistorySecs = currentHistorySecs * 1000;
         this.maxMemoryOverloadedRatio = maxMemoryOverloadedRatio;
@@ -143,6 +136,8 @@ class SystemStatus {
      * @param {number} [sampleDurationMillis]
      * @return {SystemInfo}
      * @ignore
+     * @protected
+     * @internal
      */
     _isSystemIdle(sampleDurationMillis) {
         const memInfo = this._isMemoryOverloaded(sampleDurationMillis);
@@ -165,6 +160,8 @@ class SystemStatus {
      * @param {number} sampleDurationMillis
      * @return {object}
      * @ignore
+     * @protected
+     * @internal
      */
     _isMemoryOverloaded(sampleDurationMillis) {
         const sample = this.snapshotter.getMemorySample(sampleDurationMillis);
@@ -178,6 +175,8 @@ class SystemStatus {
      * @param {number} sampleDurationMillis
      * @return {object}
      * @ignore
+     * @protected
+     * @internal
      */
     _isEventLoopOverloaded(sampleDurationMillis) {
         const sample = this.snapshotter.getEventLoopSample(sampleDurationMillis);
@@ -191,6 +190,8 @@ class SystemStatus {
      * @param {number} sampleDurationMillis
      * @return {object}
      * @ignore
+     * @protected
+     * @internal
      */
     _isCpuOverloaded(sampleDurationMillis) {
         const sample = this.snapshotter.getCpuSample(sampleDurationMillis);
@@ -202,7 +203,9 @@ class SystemStatus {
      * if the client has been overloaded in the last sampleDurationMillis.
      * @param {number} sampleDurationMillis
      * @return {{isOverloaded: boolean, maxOverloadedRatio: number, actualRatio: number}}
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _isClientOverloaded(sampleDurationMillis) {
         const sample = this.snapshotter.getClientSample(sampleDurationMillis);
@@ -217,6 +220,8 @@ class SystemStatus {
      * @param {number} ratio
      * @return {object}
      * @ignore
+     * @protected
+     * @internal
      */
     _isSampleOverloaded(sample, ratio) { // eslint-disable-line class-methods-use-this
         const weights = [];

@@ -1,19 +1,27 @@
+import ow from 'ow';
 import * as path from 'path';
 import * as _ from 'underscore';
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import { APIFY_PROXY_VALUE_REGEX } from 'apify-shared/regexs';
-import { ENV_VARS, INTEGER_ENV_VARS, LOCAL_ENV_VARS, ACT_JOB_TERMINAL_STATUSES, ACT_JOB_STATUSES } from 'apify-shared/consts';
+import { ENV_VARS, INTEGER_ENV_VARS, ACT_JOB_STATUSES } from 'apify-shared/consts';
 import log from './utils_log';
-import { EXIT_CODES, COUNTRY_CODE_REGEX } from './constants';
+import { EXIT_CODES } from './constants';
 import { initializeEvents, stopEvents } from './events';
-import { apifyClient, addCharsetToContentType, sleep, snakeCaseToCamelCase, isAtHome, logSystemInfo, printOutdatedSdkWarning } from './utils';
-import { maybeStringify } from './key_value_store';
-import { ApifyCallError } from './errors';
-
-const METAMORPH_AFTER_SLEEP_MILLIS = 300000;
+import {
+    apifyClient,
+    addCharsetToContentType,
+    sleep,
+    snakeCaseToCamelCase,
+    isAtHome,
+    logSystemInfo,
+    printOutdatedSdkWarning,
+} from './utils';
+import * as utils from './utils';
+import { maybeStringify } from './storages/key_value_store';
 
 // eslint-disable-next-line import/named,no-unused-vars,import/first
 import { ActorRun } from './typedefs';
+import { ApifyCallError } from './errors';
+
+const METAMORPH_AFTER_SLEEP_MILLIS = 300000;
 
 /**
  * Tries to parse a string with date.
@@ -27,75 +35,8 @@ const tryParseDate = (str) => {
 };
 
 /**
- * Waits for given run to finish. If "waitSecs" is reached then returns unfinished run.
- *
- * @ignore
- */
-const waitForRunToFinish = async ({ actId, runId, token, waitSecs, taskId }) => {
-    let updatedRun;
-
-    const { acts } = apifyClient;
-    const startedAt = Date.now();
-    const shouldRepeat = () => {
-        if (waitSecs && (Date.now() - startedAt) / 1000 >= waitSecs) return false;
-        if (updatedRun && ACT_JOB_TERMINAL_STATUSES.includes(updatedRun.status)) return false;
-
-        return true;
-    };
-
-    const getRunOpts = { actId, runId };
-    if (token) getRunOpts.token = token;
-
-    while (shouldRepeat()) {
-        getRunOpts.waitForFinish = waitSecs
-            ? Math.round(waitSecs - (Date.now() - startedAt) / 1000)
-            : 999999;
-
-        updatedRun = await acts.getRun(getRunOpts);
-
-        // It might take some time for database replicas to get up-to-date,
-        // so getRun() might return null. Wait a little bit and try it again.
-        if (!updatedRun) await sleep(250);
-    }
-
-    if (!updatedRun) {
-        throw new ApifyCallError({ id: runId, actId }, 'Apify.call() failed, cannot fetch actor run details from the server');
-    }
-    const { status } = updatedRun;
-    if (
-        status !== ACT_JOB_STATUSES.SUCCEEDED
-        && status !== ACT_JOB_STATUSES.RUNNING
-        && status !== ACT_JOB_STATUSES.READY
-    ) {
-        const message = taskId
-            ? `The actor task ${taskId} invoked by Apify.call() did not succeed. For details, see https://my.apify.com/view/runs/${runId}`
-            : `The actor ${actId} invoked by Apify.call() did not succeed. For details, see https://my.apify.com/view/runs/${runId}`;
-        throw new ApifyCallError(updatedRun, message);
-    }
-
-    return updatedRun;
-};
-
-/**
- * Parses input and contentType and appends it to a given options object.
- * Throws if input is not valid.
- *
- * @ignore
- */
-const addInputOptionsOrThrow = (input, contentType, options) => {
-    options.contentType = contentType;
-
-    // NOTE: this function modifies contentType property on options object if needed.
-    options.body = maybeStringify(input, options);
-
-    checkParamOrThrow(options.body, 'input', 'Buffer|String');
-    checkParamOrThrow(options.contentType, 'contentType', 'String');
-
-    options.contentType = addCharsetToContentType(options.contentType);
-};
-
-/**
  * Parsed representation of the `APIFY_XXX` environmental variables.
+ * This object is returned by the {@link Apify#getEnv} function.
  *
  * @typedef ApifyEnv
  * @property {string|null} actorId ID of the actor (APIFY_ACTOR_ID)
@@ -113,6 +54,10 @@ const addInputOptionsOrThrow = (input, contentType, options) => {
  *   actor is stored (APIFY_DEFAULT_DATASET_ID)
  * @property {number|null} memoryMbytes Amount of memory allocated for the actor,
  *   in megabytes (APIFY_MEMORY_MBYTES)
+ */
+
+/**
+ * @typedef {Array<('ACTOR.RUN.SUCCEEDED' | 'ACTOR.RUN.ABORTED' | 'ACTOR.RUN.CREATED' | 'ACTOR.RUN.FAILED' | 'ACTOR.RUN.TIMED_OUT')>} EventTypes
  */
 
 /**
@@ -167,22 +112,18 @@ export const getEnv = () => {
  *
  * The `Apify.main()` function performs the following actions:
  *
- * <ol>
- *   <li>When running on the Apify platform (i.e. <code>APIFY_IS_AT_HOME</code> environment variable is set),
+ * - When running on the Apify platform (i.e. <code>APIFY_IS_AT_HOME</code> environment variable is set),
  *   it sets up a connection to listen for platform events.
  *   For example, to get a notification about an imminent migration to another server.
- *   See [](apify#apifyevents) for details.
- *   </li>
- *   <li>It checks that either <code>APIFY_TOKEN</code> or <code>APIFY_LOCAL_STORAGE_DIR</code> environment variable
+ *   See {@link Apify.events} for details.
+ * - It checks that either <code>APIFY_TOKEN</code> or <code>APIFY_LOCAL_STORAGE_DIR</code> environment variable
  *   is defined. If not, the functions sets <code>APIFY_LOCAL_STORAGE_DIR</code> to <code>./apify_storage</code>
  *   inside the current working directory. This is to simplify running code examples.
- *   </li>
- *   <li>It invokes the user function passed as the <code>userFunc</code> parameter.</li>
- *   <li>If the user function returned a promise, waits for it to resolve.</li>
- *   <li>If the user function throws an exception or some other error is encountered,
- *       prints error details to console so that they are stored to the log.</li>
- *   <li>Exits the Node.js process, with zero exit code on success and non-zero on errors.</li>
- * </ol>
+ * - It invokes the user function passed as the <code>userFunc</code> parameter.
+ * - If the user function returned a promise, waits for it to resolve.
+ * - If the user function throws an exception or some other error is encountered,
+ *   prints error details to console so that they are stored to the log.
+ * - Exits the Node.js process, with zero exit code on success and non-zero on errors.
  *
  * The user function can be synchronous:
  *
@@ -195,7 +136,7 @@ export const getEnv = () => {
  *
  * If the user function returns a promise, it is considered asynchronous:
  * ```javascript
- * const request = require('request-promise-native');
+ * const { requestAsBrowser } = require('some-request-library');
  *
  * Apify.main(() => {
  *   // My asynchronous function that returns a promise
@@ -208,7 +149,7 @@ export const getEnv = () => {
  * To simplify your code, you can take advantage of the `async`/`await` keywords:
  *
  * ```javascript
- * const request = require('request-promise-native');
+ * const request = require('some-request-library');
  *
  * Apify.main(async () => {
  *   // My asynchronous function
@@ -244,8 +185,8 @@ export const main = (userFunc) => {
     // This is to enable unit tests where process.exit() is mocked and doesn't really exit the process
     // Note that mocked process.exit() might throw, so set exited flag before calling it to avoid confusion.
     let exited = false;
-    const exitWithError = (err, exitCode, message) => {
-        log.exception(err, message);
+    const exitWithError = (err, exitCode) => {
+        log.exception(err);
         exited = true;
         // console.log(`Exiting with code: ${exitCode}`);
         process.exit(exitCode);
@@ -271,18 +212,23 @@ export const main = (userFunc) => {
             stopEvents();
             clearInterval(intervalId);
             if (!exited) {
-                exitWithError(err, EXIT_CODES.ERROR_USER_FUNCTION_THREW, 'The function passed to Apify.main() threw an exception:');
+                exitWithError(err, EXIT_CODES.ERROR_USER_FUNCTION_THREW);
             }
         }
     };
 
     run().catch((err) => {
-        exitWithError(err, EXIT_CODES.ERROR_UNKNOWN, 'Unknown error occurred');
+        exitWithError(err, EXIT_CODES.ERROR_UNKNOWN);
     });
 };
 
-let callMemoryWarningIssued = false;
-
+/**
+ * @typedef AdhocWebhook
+ * @property {EventTypes} eventTypes
+ * @property {string} requestUrl
+ * @property {string} [idempotencyKey]
+ * @property {string} [payloadTemplate]
+ */
 
 /**
  * Runs an actor on the Apify platform using the current user account (determined by the `APIFY_TOKEN` environment variable),
@@ -313,12 +259,12 @@ let callMemoryWarningIssued = false;
  * and several other API endpoints to obtain the output.
  *
  * @param {string} actId
- *  Either `username/actor-name` or actor ID.
- * @param {object} [input]
+ *  Allowed formats are `username/actor-name`, `userId/actor-name` or actor ID.
+ * @param {Object<string, *>} [input]
  *  Input for the actor. If it is an object, it will be stringified to
  *  JSON and its content type set to `application/json; charset=utf-8`.
  *  Otherwise the `options.contentType` parameter must be provided.
- * @param {Object} [options={}]
+ * @param {object} [options]
  *   Object with the settings below:
  * @param {string} [options.contentType]
  *  Content type for the `input`. If not specified,
@@ -336,7 +282,7 @@ let callMemoryWarningIssued = false;
  * @param {string} [options.build]
  *  Tag or number of the actor build to run (e.g. `beta` or `1.2.345`).
  *  If not provided, the run uses build tag or number from the default actor run configuration (typically `latest`).
- * @param {string} [options.waitSecs]
+ * @param {number} [options.waitSecs]
  *  Maximum time to wait for the actor run to finish, in seconds.
  *  If the limit is reached, the returned promise is resolved to a run object that will have
  *  status `READY` or `RUNNING` and it will not contain the actor run output.
@@ -346,7 +292,7 @@ let callMemoryWarningIssued = false;
  * @param {boolean} [options.disableBodyParser=false]
  *  If `true` then the function will not attempt to parse the
  *  actor's output and will return it in a raw `Buffer`.
- * @param {Array<object>} [options.webhooks] Specifies optional webhooks associated with the actor run, which can be used
+ * @param {Array<AdhocWebhook>} [options.webhooks] Specifies optional webhooks associated with the actor run, which can be used
  *  to receive a notification e.g. when the actor finished or failed, see
  *  [ad hook webhooks documentation](https://docs.apify.com/webhooks/ad-hoc-webhooks) for detailed description.
  * @returns {Promise<ActorRun>}
@@ -357,71 +303,64 @@ let callMemoryWarningIssued = false;
  * @name call
  */
 export const call = async (actId, input, options = {}) => {
-    const { acts, keyValueStores } = apifyClient;
+    ow(actId, ow.string);
+    // input can be anything, no reason to validate
+    ow(options, ow.object.exactShape({
+        contentType: ow.optional.string.nonEmpty,
+        token: ow.optional.string,
+        memoryMbytes: ow.optional.number.not.negative,
+        timeoutSecs: ow.optional.number.not.negative,
+        build: ow.optional.string,
+        waitSecs: ow.optional.number.not.negative,
+        fetchOutput: ow.optional.boolean,
+        disableBodyParser: ow.optional.boolean,
+        webhooks: ow.optional.array.ofType(ow.object),
+    }));
 
-    checkParamOrThrow(actId, 'actId', 'String');
-    checkParamOrThrow(options, 'opts', 'Object');
+    const {
+        token,
+        fetchOutput = true,
+        disableBodyParser = false,
+        memoryMbytes,
+        timeoutSecs,
+        ...callActorOpts
+    } = options;
 
-    // Common options.
-    const { token } = options;
-    checkParamOrThrow(token, 'token', 'Maybe String');
+    callActorOpts.memory = memoryMbytes;
+    callActorOpts.timeout = timeoutSecs;
 
-    // RunAct() options.
-    const { build, memory, timeoutSecs, webhooks } = options;
-    let { memoryMbytes } = options;
-    const runActOpts = {
-        actId,
-    };
-
-    // HOTFIX: Some old actors use "memory", so we need to keep them working for a while
-    if (memory && !memoryMbytes) {
-        memoryMbytes = memory;
-        if (!callMemoryWarningIssued) {
-            callMemoryWarningIssued = true;
-            // eslint-disable-next-line max-len
-            log.warning('The "memory" option of the Apify.call() function has been deprecated and will be removed in the future. Use "memoryMbytes" instead!');
-        }
+    if (input) {
+        callActorOpts.contentType = addCharsetToContentType(callActorOpts.contentType);
+        input = maybeStringify(input, callActorOpts);
     }
 
-    checkParamOrThrow(build, 'build', 'Maybe String');
-    checkParamOrThrow(memoryMbytes, 'memoryMbytes', 'Maybe Number');
-    checkParamOrThrow(timeoutSecs, 'timeoutSecs', 'Maybe Number');
-    checkParamOrThrow(webhooks, 'webhooks', 'Maybe Array');
-    if (token) runActOpts.token = token;
-    if (build) runActOpts.build = build;
-    if (memoryMbytes) runActOpts.memory = memoryMbytes;
-    if (timeoutSecs >= 0) runActOpts.timeout = timeoutSecs; // Zero is valid value!
-    if (webhooks) runActOpts.webhooks = webhooks;
-    if (input) addInputOptionsOrThrow(input, options.contentType, runActOpts);
+    const client = token ? utils.newClient({ token }) : apifyClient;
 
-    // Run actor.
-    const { waitSecs } = options;
-    checkParamOrThrow(waitSecs, 'waitSecs', 'Maybe Number');
-    const run = await acts.runAct(runActOpts);
-    if (waitSecs <= 0) return run; // In this case there is nothing more to do.
+    let run;
+    try {
+        run = await client.actor(actId).call(input, callActorOpts);
+    } catch (err) {
+        if (err.message.startsWith('Waiting for run to finish')) {
+            throw new ApifyCallError({ id: run.id, actId: run.actId }, 'Apify.call() failed, cannot fetch actor run details from the server');
+        }
+        throw err;
+    }
 
-    // Wait for run to finish.
-    const updatedRun = await waitForRunToFinish({
-        actId,
-        runId: run.id,
-        token,
-        waitSecs,
-    });
+    if (isRunUnsuccessful(run.status)) {
+        const message = `The actor ${actId} invoked by Apify.call() did not succeed. For details, see https://my.apify.com/view/runs/${run.id}`;
+        throw new ApifyCallError(run, message);
+    }
 
     // Finish if output is not requested or run haven't finished.
-    const { fetchOutput = true } = options;
-    if (!fetchOutput || updatedRun.status !== ACT_JOB_STATUSES.SUCCEEDED) return updatedRun;
+    if (!fetchOutput || run.status !== ACT_JOB_STATUSES.SUCCEEDED) return run;
 
     // Fetch output.
-    const { disableBodyParser = false } = options;
-    checkParamOrThrow(disableBodyParser, 'disableBodyParser', 'Boolean');
-    const output = await keyValueStores.getRecord({
-        key: 'OUTPUT',
-        storeId: updatedRun.defaultKeyValueStoreId,
-        disableBodyParser,
-    });
+    let getRecordOptions = {};
+    if (disableBodyParser) getRecordOptions = { buffer: true };
 
-    return Object.assign({}, updatedRun, { output });
+    const { value: body, contentType } = await client.keyValueStore(run.defaultKeyValueStoreId).getRecord('OUTPUT', getRecordOptions);
+
+    return { ...run, output: { contentType, body } };
 };
 
 /**
@@ -453,19 +392,13 @@ export const call = async (actId, input, options = {}) => {
  * and several other API endpoints to obtain the output.
  *
  * @param {string} taskId
- *  Either `username/task-name` or task ID.
- * @param {object} [input]
+ *  Allowed formats are `username/task-name`, `userId/task-name` or task ID.
+ * @param {Object<string, *>} [input]
  *  Input overrides for the actor task. If it is an object, it will be stringified to
  *  JSON and its content type set to `application/json; charset=utf-8`.
- *  Otherwise the `options.contentType` parameter must be provided.
  *  Provided input will be merged with actor task input.
- * @param {Object} [options={}]
+ * @param {object} [options]
  *   Object with the settings below:
- * @param {string} [options.contentType]
- *  Content type for the `input`. If not specified,
- *  `input` is expected to be an object that will be stringified to JSON and content type set to
- *  `application/json; charset=utf-8`. If `options.contentType` is specified, then `input` must be a
- *  `String` or `Buffer`.
  * @param {string} [options.token]
  *  User API token that is used to run the actor. By default, it is taken from the `APIFY_TOKEN` environment variable.
  * @param {number} [options.memoryMbytes]
@@ -477,12 +410,12 @@ export const call = async (actId, input, options = {}) => {
  * @param {string} [options.build]
  *  Tag or number of the actor build to run (e.g. `beta` or `1.2.345`).
  *  If not provided, the run uses build tag or number from the default actor run configuration (typically `latest`).
- * @param {string} [options.waitSecs]
+ * @param {number} [options.waitSecs]
  *  Maximum time to wait for the actor task run to finish, in seconds.
  *  If the limit is reached, the returned promise is resolved to a run object that will have
  *  status `READY` or `RUNNING` and it will not contain the actor run output.
  *  If `waitSecs` is null or undefined, the function waits for the actor task to finish (default behavior).
- * @param {Array<object>} [options.webhooks] Specifies optional webhooks associated with the actor run, which can be used
+ * @param {Array<AdhocWebhook>} [options.webhooks] Specifies optional webhooks associated with the actor run, which can be used
  *  to receive a notification e.g. when the actor finished or failed, see
  *  [ad hook webhooks documentation](https://docs.apify.com/webhooks/ad-hoc-webhooks) for detailed description.
  * @returns {Promise<ActorRun>}
@@ -493,60 +426,66 @@ export const call = async (actId, input, options = {}) => {
  * @name callTask
  */
 export const callTask = async (taskId, input, options = {}) => {
-    const { tasks, keyValueStores } = apifyClient;
+    ow(taskId, ow.string);
+    ow(input, ow.optional.any(ow.string, ow.object));
+    ow(options, ow.object.exactShape({
+        token: ow.optional.string,
+        memoryMbytes: ow.optional.number.not.negative,
+        timeoutSecs: ow.optional.number.not.negative,
+        build: ow.optional.string,
+        waitSecs: ow.optional.number.not.negative,
+        fetchOutput: ow.optional.boolean,
+        disableBodyParser: ow.optional.boolean,
+        webhooks: ow.optional.array.ofType(ow.object),
+    }));
 
-    checkParamOrThrow(taskId, 'taskId', 'String');
-    checkParamOrThrow(options, 'opts', 'Object');
-
-    // Common options.
-    const { token } = options;
-    checkParamOrThrow(token, 'token', 'Maybe String');
-
-    // Run task options.
-    const { build, memoryMbytes, timeoutSecs, webhooks } = options;
-    const runTaskOpts = { taskId };
-    checkParamOrThrow(build, 'build', 'Maybe String');
-    checkParamOrThrow(memoryMbytes, 'memoryMbytes', 'Maybe Number');
-    checkParamOrThrow(timeoutSecs, 'timeoutSecs', 'Maybe Number');
-    checkParamOrThrow(webhooks, 'webhooks', 'Maybe Array');
-    if (token) runTaskOpts.token = token;
-    if (build) runTaskOpts.build = build;
-    if (memoryMbytes) runTaskOpts.memory = memoryMbytes;
-    if (timeoutSecs >= 0) runTaskOpts.timeout = timeoutSecs; // Zero is valid value!
-    if (input) runTaskOpts.input = input;
-    if (webhooks) runTaskOpts.webhooks = webhooks;
-
-    // Start task.
-    const { waitSecs } = options;
-    checkParamOrThrow(waitSecs, 'waitSecs', 'Maybe Number');
-    const run = await tasks.runTask(runTaskOpts);
-    if (waitSecs <= 0) return run; // In this case there is nothing more to do.
-
-    // Wait for run to finish.
-    const updatedRun = await waitForRunToFinish({
-        actId: run.actId,
-        runId: run.id,
+    const {
         token,
-        waitSecs,
-        taskId,
-    });
+        fetchOutput = true,
+        disableBodyParser = false,
+        memoryMbytes,
+        timeoutSecs,
+        ...callTaskOpts
+    } = options;
+
+    callTaskOpts.memory = memoryMbytes;
+    callTaskOpts.timeout = timeoutSecs;
+
+    const client = token ? utils.newClient({ token }) : apifyClient;
+    // Start task and wait for run to finish if waitSecs is provided
+    let run;
+    try {
+        run = await client.task(taskId).call(input, callTaskOpts);
+    } catch (err) {
+        if (err.message.startsWith('Waiting for run to finish')) {
+            throw new ApifyCallError({ id: run.id, actId: run.actId }, 'Apify.call() failed, cannot fetch actor run details from the server');
+        }
+        throw err;
+    }
+
+    if (isRunUnsuccessful(run.status)) {
+        // TODO It should be callTask in the message, but I'm keeping it this way not to introduce a breaking change.
+        const message = `The actor task ${taskId} invoked by Apify.call() did not succeed. For details, see https://my.apify.com/view/runs/${run.id}`;
+        throw new ApifyCallError(run, message);
+    }
 
     // Finish if output is not requested or run haven't finished.
-    const { fetchOutput = true } = options;
-    if (!fetchOutput || updatedRun.status !== ACT_JOB_STATUSES.SUCCEEDED) return updatedRun;
+    if (!fetchOutput || run.status !== ACT_JOB_STATUSES.SUCCEEDED) return run;
 
     // Fetch output.
-    const { disableBodyParser = false } = options;
-    checkParamOrThrow(disableBodyParser, 'disableBodyParser', 'Boolean');
-    const output = await keyValueStores.getRecord({
-        key: 'OUTPUT',
-        storeId: updatedRun.defaultKeyValueStoreId,
-        disableBodyParser,
-    });
+    let getRecordOptions = {};
+    if (disableBodyParser) getRecordOptions = { buffer: true };
 
-    return Object.assign({}, updatedRun, { output });
+    const { value: body, contentType } = await client.keyValueStore(run.defaultKeyValueStoreId).getRecord('OUTPUT', getRecordOptions);
+
+    return { ...run, output: { contentType, body } };
 };
 
+function isRunUnsuccessful(status) {
+    return status !== ACT_JOB_STATUSES.SUCCEEDED
+        && status !== ACT_JOB_STATUSES.RUNNING
+        && status !== ACT_JOB_STATUSES.READY;
+}
 
 /**
  * Transforms this actor run to an actor run of a given actor. The system stops the current container and starts the new container
@@ -554,11 +493,11 @@ export const callTask = async (taskId, input, options = {}) => {
  *
  * @param {string} targetActorId
  *  Either `username/actor-name` or actor ID of an actor to which we want to metamorph.
- * @param {object} [input]
+ * @param {Object<string, *>} [input]
  *  Input for the actor. If it is an object, it will be stringified to
  *  JSON and its content type set to `application/json; charset=utf-8`.
  *  Otherwise the `options.contentType` parameter must be provided.
- * @param {Object} [options={}]
+ * @param {object} [options]
  *   Object with the settings below:
  * @param {string} [options.contentType]
  *  Content type for the `input`. If not specified,
@@ -575,14 +514,18 @@ export const callTask = async (taskId, input, options = {}) => {
  * @name metamorph
  */
 export const metamorph = async (targetActorId, input, options = {}) => {
-    // Use optionsCopy here as maybeStringify() may override contentType
-    const optionsCopy = Object.assign({}, options);
-    const { acts } = apifyClient;
+    ow(targetActorId, ow.string);
+    // input can be anything, no reason to validate
+    ow(options, ow.object.exactShape({
+        contentType: ow.optional.string.nonEmpty,
+        build: ow.optional.string,
+        customAfterSleepMillis: ow.optional.number.not.negative,
+    }));
 
-    checkParamOrThrow(targetActorId, 'targetActorId', 'String');
-    checkParamOrThrow(optionsCopy, 'opts', 'Object');
-    checkParamOrThrow(optionsCopy.build, 'options.build', 'Maybe String');
-    checkParamOrThrow(optionsCopy.contentType, 'options.contentType', 'Maybe String');
+    const {
+        customAfterSleepMillis,
+        ...metamorphOpts
+    } = options;
 
     const actorId = process.env[ENV_VARS.ACTOR_ID];
     const runId = process.env[ENV_VARS.ACTOR_RUN_ID];
@@ -590,132 +533,33 @@ export const metamorph = async (targetActorId, input, options = {}) => {
     if (!runId) throw new Error(`Environment variable ${ENV_VARS.ACTOR_RUN_ID} must be provided!`);
 
     if (input) {
-        input = maybeStringify(input, optionsCopy);
-        checkParamOrThrow(input, 'input', 'Buffer|String');
-        if (optionsCopy.contentType) optionsCopy.contentType = addCharsetToContentType(optionsCopy.contentType);
+        metamorphOpts.contentType = addCharsetToContentType(metamorphOpts.contentType);
+        input = maybeStringify(input, metamorphOpts);
     }
 
-    await acts.metamorphRun({
-        actId: actorId,
-        runId,
-        targetActorId,
-        contentType: optionsCopy.contentType,
-        body: input,
-        build: optionsCopy.build,
-    });
+    await utils.apifyClient.run(runId, actorId).metamorph(targetActorId, input, metamorphOpts);
 
     // Wait some time for container to be stopped.
     // NOTE: option.customAfterSleepMillis is used in tests
-    await sleep(optionsCopy.customAfterSleepMillis || METAMORPH_AFTER_SLEEP_MILLIS);
+    await sleep(customAfterSleepMillis || METAMORPH_AFTER_SLEEP_MILLIS);
 };
 
 /**
- * Constructs an Apify Proxy URL using the specified settings.
- * The proxy URL can be used from Apify actors, web browsers or any other HTTP
- * proxy-enabled applications.
- *
- * For more information, see the [Apify Proxy](https://my.apify.com/proxy) page in the app
- * or the [documentation](https://docs.apify.com/proxy).
- *
- * @param {Object} [options]
- *   Object with the props below:
- * @param {string} [options.password]
- *   User's password for the proxy. By default, it is taken from the `APIFY_PROXY_PASSWORD`
- *   environment variable, which is automatically set by the system when running the actors
- *   on the Apify cloud, or when using the [Apify CLI](https://github.com/apifytech/apify-cli)
- *   package and the user previously logged in (called `apify login`).
- * @param {string[]} [options.groups]
- *   Array of Apify Proxy groups to be used. If not provided, the proxy will select
- *   the groups automatically.
- * @param {string} [options.session]
- *   Apify Proxy session identifier to be used by the Chrome browser. All HTTP requests
- *   going through the proxy with the same session identifier will use the same target
- *   proxy server (i.e. the same IP address), unless using Residential proxies. The identifier
- *   can only contain the following characters: `0-9`, `a-z`, `A-Z`, `"."`, `"_"` and `"~"`.
- * @param {string} [options.country]
- *   If set and relevant proxies are available in your Apify account, all proxied requests will
- *   use IP addresses that are geolocated to the specified country. For example `GB` for IPs
- *   from Great Britain. Note that online services often have their own rules for handling
- *   geolocation and thus the country selection is a best attempt at geolocation, rather than
- *   a guaranteed hit. This parameter is optional, by default, each proxied request is assigned
- *   an IP address from a random country. The country code needs to be a two letter ISO country code. See the
- *   [full list of available country codes](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2#Officially_assigned_code_elements).
- *   This parameter is optional, by default, the proxy uses all available proxy servers from all countries.
- *
- * @returns {string} Returns the proxy URL, e.g. `http://auto:my_password@proxy.apify.com:8000`.
- *
- * @memberof module:Apify
- * @function
- * @name getApifyProxyUrl
+ * @typedef WebhookRun
+ * @property {string} id
+ * @property {string} createdAt
+ * @property {string} modifiedAt
+ * @property {string} userId
+ * @property {boolean} isAdHoc
+ * @property {EventTypes} eventTypes
+ * @property {*} condition
+ * @property {boolean} ignoreSslErrors
+ * @property {boolean} doNotRetry
+ * @property {string} requestUrl
+ * @property {string} payloadTemplate
+ * @property {*} lastDispatch
+ * @property {*} stats
  */
-export const getApifyProxyUrl = (options = {}) => {
-    // For backwards compatibility.
-    // TODO: remove this when we release v1.0.0
-    if (!options.groups && options.apifyProxyGroups) {
-        log.warning('Parameter `apifyProxyGroups` of Apify.getApifyProxyUrl() is deprecated!!! Use `groups` instead!');
-        options.groups = options.apifyProxyGroups;
-    }
-    if (!options.session && options.apifyProxySession) {
-        log.warning('Parameter `apifyProxySession` of Apify.getApifyProxyUrl() is deprecated!!! Use `session` instead!');
-        options.session = options.apifyProxySession;
-    }
-
-    const {
-        groups,
-        session,
-        country,
-        password = process.env[ENV_VARS.PROXY_PASSWORD],
-        hostname = process.env[ENV_VARS.PROXY_HOSTNAME] || LOCAL_ENV_VARS[ENV_VARS.PROXY_HOSTNAME],
-        port = parseInt(process.env[ENV_VARS.PROXY_PORT] || LOCAL_ENV_VARS[ENV_VARS.PROXY_PORT], 10),
-
-        // This is used only internaly. Some other function calling this function use different naming for groups and session
-        // parameters so we need to override this in error messages.
-        groupsParamName = 'opts.groups',
-        sessionParamName = 'opts.session',
-        countryParamName = 'opts.country',
-    } = options;
-
-    const getMissingParamErrorMgs = (param, env) => `Apify Proxy ${param} must be provided as parameter or "${env}" environment variable!`;
-    const throwInvalidProxyValueError = (param) => {
-        throw new Error(`The "${param}" option can only contain the following characters: 0-9, a-z, A-Z, ".", "_" and "~"`);
-    };
-    const throwInvalidCountryCode = (code) => {
-        throw new Error(`The "${code}" option must be a valid two letter country code according to ISO 3166-1 alpha-2`);
-    };
-
-    checkParamOrThrow(groups, groupsParamName, 'Maybe [String]');
-    checkParamOrThrow(session, sessionParamName, 'Maybe Number | String');
-    checkParamOrThrow(country, countryParamName, 'Maybe String');
-    checkParamOrThrow(password, 'opts.password', 'String', getMissingParamErrorMgs('password', ENV_VARS.PROXY_PASSWORD));
-    checkParamOrThrow(hostname, 'opts.hostname', 'String', getMissingParamErrorMgs('hostname', ENV_VARS.PROXY_HOSTNAME));
-    checkParamOrThrow(port, 'opts.port', 'Number', getMissingParamErrorMgs('port', ENV_VARS.PROXY_PORT));
-
-    let username;
-
-    if (groups || session || country) {
-        const parts = [];
-
-        if (groups && groups.length) {
-            if (!groups.every(group => APIFY_PROXY_VALUE_REGEX.test(group))) throwInvalidProxyValueError('groups');
-            parts.push(`groups-${groups.join('+')}`);
-        }
-        if (session) {
-            if (!APIFY_PROXY_VALUE_REGEX.test(session)) throwInvalidProxyValueError('session');
-            parts.push(`session-${session}`);
-        }
-        if (country) {
-            if (!COUNTRY_CODE_REGEX.test(country)) throwInvalidCountryCode(country);
-            parts.push(`country-${country}`);
-        }
-
-        username = parts.join(',');
-    } else {
-        username = 'auto';
-    }
-
-    return `http://${username}:${password}@${hostname}:${port}`;
-};
-
 /**
  *
  * Creates an ad-hoc webhook for the current actor run, which lets you receive a notification when the actor run finished or failed.
@@ -724,8 +568,8 @@ export const getApifyProxyUrl = (options = {}) => {
  * Note that webhooks are only supported for actors running on the Apify platform.
  * In local environment, the function will print a warning and have no effect.
  *
- * @param {Object} options
- * @param {string[]} options.eventTypes
+ * @param {object} options
+ * @param {EventTypes} options.eventTypes
  *   Array of event types, which you can set for actor run, see
  *   the [actor run events](https://docs.apify.com/webhooks/events#actor-run) in the Apify doc.
  * @param {string}  options.requestUrl
@@ -735,25 +579,29 @@ export const getApifyProxyUrl = (options = {}) => {
  *   It uses JSON syntax, extended with a double curly braces syntax for injecting variables `{{variable}}`.
  *   Those variables are resolved at the time of the webhook's dispatch, and a list of available variables with their descriptions
  *   is available in the [Apify webhook documentation](https://docs.apify.com/webhooks).
- *
- *   When omitted, the default payload template will be used.
- *   [See the docs for the default payload template](https://docs.apify.com/webhooks).
+ *   If `payloadTemplate` is omitted, the default payload template is used
+ *   ([view docs](https://docs.apify.com/webhooks/actions#payload-template)).
  * @param {string} [options.idempotencyKey]
  *   Idempotency key enables you to ensure that a webhook will not be added multiple times in case of
  *   an actor restart or other situation that would cause the `addWebhook()` function to be called again.
  *   We suggest using the actor run ID as the idempotency key. You can get the run ID by calling
  *   {@link Apify#getEnv} function.
- * @return {Promise<object>} The return value is the Webhook object.
+ * @return {Promise<WebhookRun|undefined>} The return value is the Webhook object.
  * For more information, see the [Get webhook](https://apify.com/docs/api/v2#/reference/webhooks/webhook-object/get-webhook) API endpoint.
  *
  * @memberof module:Apify
  * @function
  * @name addWebhook
  */
-export const addWebhook = async ({ eventTypes, requestUrl, payloadTemplate, idempotencyKey }) => {
-    checkParamOrThrow(eventTypes, 'eventTypes', '[String]');
-    checkParamOrThrow(requestUrl, 'requestUrl', 'String');
-    checkParamOrThrow(payloadTemplate, 'payloadTemplate', 'Maybe String');
+export const addWebhook = async (options) => {
+    ow(options, ow.object.exactShape({
+        eventTypes: ow.array.ofType(ow.string),
+        requestUrl: ow.string,
+        payloadTemplate: ow.optional.string,
+        idempotencyKey: ow.optional.string,
+    }));
+
+    const { eventTypes, requestUrl, payloadTemplate, idempotencyKey } = options;
 
     if (!isAtHome()) {
         log.warning('Apify.addWebhook() is only supported when running on the Apify platform. The webhook will not be invoked.');
@@ -765,16 +613,14 @@ export const addWebhook = async ({ eventTypes, requestUrl, payloadTemplate, idem
         throw new Error(`Environment variable ${ENV_VARS.ACTOR_RUN_ID} is not set!`);
     }
 
-    return apifyClient.webhooks.createWebhook({
-        webhook: {
-            isAdHoc: true,
-            eventTypes,
-            condition: {
-                actorRunId: runId,
-            },
-            requestUrl,
-            payloadTemplate,
-            idempotencyKey,
+    return apifyClient.webhooks().create({
+        isAdHoc: true,
+        eventTypes,
+        condition: {
+            actorRunId: runId,
         },
+        requestUrl,
+        payloadTemplate,
+        idempotencyKey,
     });
 };

@@ -1,27 +1,38 @@
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import * as _ from 'underscore';
-import PuppeteerPool, { BROWSER_SESSION_KEY_NAME } from '../puppeteer_pool'; // eslint-disable-line import/no-duplicates
-import { BASIC_CRAWLER_TIMEOUT_MULTIPLIER } from '../constants';
+import ow from 'ow';
+
 import { gotoExtended } from '../puppeteer_utils';
-import { openSessionPool } from '../session_pool/session_pool'; // eslint-disable-line import/no-duplicates
-import { addTimeoutToPromise } from '../utils';
-import BasicCrawler from './basic_crawler'; // eslint-disable-line import/no-duplicates
-import log from '../utils_log';
+import applyStealthToBrowser from '../stealth/stealth';
 
-// TYPE IMPORTS
 /* eslint-disable no-unused-vars,import/named,import/no-duplicates,import/order */
-import { Browser, Page as PuppeteerPage, Response as PuppeteerResponse } from 'puppeteer';
+import { PuppeteerLauncher, PuppeteerLaunchContext } from '../browser_launchers/puppeteer_launcher';
 import { HandleFailedRequest } from './basic_crawler';
-import { PuppeteerPoolOptions, LaunchPuppeteerFunction } from '../puppeteer_pool';
-import Request from '../request'; // eslint-disable-line no-unused-vars
-import { RequestList } from '../request_list'; // eslint-disable-line no-unused-vars
-import { RequestQueue } from '../request_queue'; // eslint-disable-line no-unused-vars
-import AutoscaledPool, { AutoscaledPoolOptions } from '../autoscaling/autoscaled_pool'; // eslint-disable-line no-unused-vars,import/named
-import { LaunchPuppeteerOptions } from '../puppeteer'; // eslint-disable-line no-unused-vars,import/named
-import { Session } from '../session_pool/session'; // eslint-disable-line no-unused-vars
+import BrowserCrawler, { BrowserCrawlingContext } from './browser_crawler';
+import { ProxyConfiguration } from '../proxy_configuration';
 import { SessionPoolOptions } from '../session_pool/session_pool';
-// eslint-enable-line import/no-duplicates
+import { CrawlingContext } from './basic_crawler';
+import { Page, DirectNavigationOptions } from 'puppeteer';
+import { RequestList } from '../request_list';
+import { RequestQueue } from '../storages/request_queue';
+import { AutoscaledPoolOptions } from '../autoscaling/autoscaled_pool';
+import { BrowserPoolOptions } from 'browser-pool';
+/* eslint-enable no-unused-vars,import/named,import/no-duplicates,import/order */
 
+/**
+ * @callback PuppeteerHook
+ * @param {{ page: Page, crawler: PuppeteerCrawler } & BrowserCrawlingContext & CrawlingContext} crawlingContext
+ * @param {DirectNavigationOptions} gotoOptions
+ * @returns {Promise<void>}
+ */
+/**
+ * @typedef PuppeteerHandlePageFunctionParam
+ * @property {Page} page
+ * @property {PuppeteerCrawler} crawler
+ */
+/**
+ * @callback PuppeteerHandlePage
+ * @param {CrawlingContext & BrowserCrawlingContext & { page: Page, crawler: PuppeteerCrawler }} context
+ * @returns {Promise<void>}
+ */
 /**
  * @typedef PuppeteerCrawlerOptions
  * @property {PuppeteerHandlePage} handlePageFunction
@@ -33,20 +44,23 @@ import { SessionPoolOptions } from '../session_pool/session_pool';
  *   request: Request,
  *   response: Response,
  *   page: Page,
- *   puppeteerPool: PuppeteerPool,
- *   autoscaledPool: AutoscaledPool,
  *   session: Session,
+ *   browserController: BrowserController,
+ *   proxyInfo: ProxyInfo,
+ *   crawler: PuppeteerCrawler,
  * }
  * ```
  *
  *   `request` is an instance of the {@link Request} object with details about the URL to open, HTTP method etc.
  *   `page` is an instance of the `Puppeteer`
  *   [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page)
+ *   `browserPool` is an instance of the
+ *   [`BrowserPool`](https://github.com/apify/browser-pool#BrowserPool),
+ *   `browserController` is an instance of the
+ *   [`BrowserController`](https://github.com/apify/browser-pool#browsercontroller),
  *   `response` is an instance of the `Puppeteer`
  *   [`Response`](https://pptr.dev/#?product=Puppeteer&show=api-class-response),
  *   which is the main resource response as returned by `page.goto(request.url)`.
- *   `puppeteerPool` is an instance of the {@link PuppeteerPool} used by this `PuppeteerCrawler`.
- *
  *   The function must return a promise, which is then awaited by the crawler.
  *
  *   If the function throws an exception, the crawler will try to re-crawl the
@@ -57,90 +71,100 @@ import { SessionPoolOptions } from '../session_pool/session_pool';
  *   let your function throw exceptions rather than catch them.
  *   The exceptions are logged to the request using the
  *   {@link Request#pushErrorMessage} function.
+ * @property {number} [navigationTimeoutSecs=60]
+ *   Timeout in which page navigation needs to finish, in seconds.
+ * @property {HandleFailedRequest} [handleFailedRequestFunction]
+ *   A function to handle requests that failed more than `option.maxRequestRetries` times.
+ *
+ *   The function receives the following object as an argument:
+ * ```
+  * {
+ *   request: Request,
+ *   response: Response,
+ *   page: Page,
+ *   session: Session,
+ *   browserController: BrowserController,
+ *   proxyInfo: ProxyInfo,
+ *   crawler: PuppeteerCrawler,
+ * }
+ * ```
+ *   Where the {@link Request} instance corresponds to the failed request, and the `Error` instance
+ *   represents the last error thrown during processing of the request.
+ * @property {PuppeteerLaunchContext} [launchContext]
+ *   Options used by {@link Apify#launchPuppeteer} to start new Puppeteer instances.
+ * @property {number} [handlePageTimeoutSecs=60]
+ *   Timeout in which the function passed as `handlePageFunction` needs to finish, in seconds.
+ * @property {BrowserPoolOptions} [browserPoolOptions]
+ *   Custom options passed to the underlying [`BrowserPool`](https://github.com/apify/browser-pool#BrowserPool) constructor.
+ *   You can tweak those to fine-tune browser management.
+ * @property {boolean} [persistCookiesPerSession=true]
+ *   Automatically saves cookies to Session. Works only if Session Pool is used.
+ * @property {ProxyConfiguration} [proxyConfiguration]
+ *   If set, `PuppeteerCrawler` will be configured for all connections to use
+ *   [Apify Proxy](https://my.apify.com/proxy) or your own Proxy URLs provided and rotated according to the configuration.
+ *   For more information, see the [documentation](https://docs.apify.com/proxy).
+ * @property {Array<PuppeteerHook>} [preNavigationHooks]
+ *   Async functions that are sequentially evaluated before the navigation. Good for setting additional cookies
+ *   or browser properties before navigation. The function accepts two parameters, `crawlingContext` and `gotoOptions`,
+ *   which are passed to the `page.goto()` function the crawler calls to navigate.
+ *   Example:
+ * ```
+ * preNavigationHooks: [
+ *     async (crawlingContext, gotoOptions) => {
+ *         const { page } = crawlingContext;
+ *         await page.evaluate((attr) => { window.foo = attr; }, 'bar');
+ *     }
+ * ]
+ * ```
+ * @property {Array<PuppeteerHook>} [postNavigationHooks]
+ *   Async functions that are sequentially evaluated after the navigation. Good for checking if the navigation was successful.
+ *   The function accepts `crawlingContext` as an only parameter.
+ *   Example:
+ * ```
+ * postNavigationHooks: [
+ *     async (crawlingContext) => {
+ *         const { page } = crawlingContext;
+ *         if (hasCaptcha(page)) {
+ *             await solveCaptcha (page);
+ *         }
+ *     };
+ * ]
+ * ```
  * @property {RequestList} [requestList]
  *   Static list of URLs to be processed.
  *   Either `requestList` or `requestQueue` option must be provided (or both).
  * @property {RequestQueue} [requestQueue]
  *   Dynamic queue of URLs to be processed. This is useful for recursive crawling of websites.
  *   Either `requestList` or `requestQueue` option must be provided (or both).
- * @property {number} [handlePageTimeoutSecs=60]
- *   Timeout in which the function passed as `handlePageFunction` needs to finish, in seconds.
- * @property {PuppeteerGoto} [gotoFunction]
- *   Overrides the function that opens the page in Puppeteer. The function should return the result of Puppeteer's
- *   [page.goto()](https://pptr.dev/#?product=Puppeteer&show=api-pagegotourl-options) function,
- *   i.e. a `Promise` resolving to the [Response](https://pptr.dev/#?product=Puppeteer&show=api-class-response) object.
- *
- *   This is useful if you need to extend the page load timeout or select different criteria
- *   to determine that the navigation succeeded.
- *
- *   Note that a single page object is only used to process a single request and it is closed afterwards.
- *
- *   By default, the function invokes {@link puppeteer#gotoExtended} with a timeout of 60 seconds.
- *   For details, see source code on
- *   [GitHub](https://github.com/apifytech/apify-js/blob/master/src/crawlers/puppeteer_crawler.js#L292).
- * @property {number} [gotoTimeoutSecs=60]
- *   Timeout in which page navigation needs to finish, in seconds. When `gotoFunction()` is used and thus the default
- *   function is overridden, this timeout will not be used and needs to be configured in the new `gotoFunction()`.
- * @property {HandleFailedRequest} [handleFailedRequestFunction]
- *   A function to handle requests that failed more than `option.maxRequestRetries` times.
- *
- *   The function receives the following object as an argument:
- * ```
- * {
- *   request: Request,
- *   error: Error,
- * }
- * ```
- *   Where the {@link Request} instance corresponds to the failed request, and the `Error` instance
- *   represents the last error thrown during processing of the request.
- *
- *   See
- *   [source code](https://github.com/apifytech/apify-js/blob/master/src/crawlers/puppeteer_crawler.js#L301)
- *   for the default implementation of this function.
+ * @property {number} [handleRequestTimeoutSecs=60]
+ *   Timeout in which the function passed as `handleRequestFunction` needs to finish, in seconds.
  * @property {number} [maxRequestRetries=3]
- *    Indicates how many times the request is retried if either `handlePageFunction()` or `gotoFunction()` fails.
+ *   Indicates how many times the request is retried if {@link PuppeteerCrawlerOptions.handlePageFunction} fails.
  * @property {number} [maxRequestsPerCrawl]
  *   Maximum number of pages that the crawler will open. The crawl will stop when this limit is reached.
  *   Always set this value in order to prevent infinite loops in misconfigured crawlers.
  *   Note that in cases of parallel crawling, the actual number of pages visited might be slightly higher than this value.
- * @property {PuppeteerPoolOptions} [puppeteerPoolOptions]
- *   Custom options passed to the underlying {@link PuppeteerPool} constructor.
- *   You can tweak those to fine-tune browser management.
- * @property {LaunchPuppeteerFunction} [launchPuppeteerFunction]
- *   Overrides the default function to launch a new Puppeteer instance.
- *   Shortcut to the corresponding {@link PuppeteerPool} option.
- *   See source code on
- *   [GitHub](https://github.com/apifytech/apify-js/blob/master/src/puppeteer_pool.js#L28)
- *   for default behavior.
- * @property {LaunchPuppeteerOptions} [launchPuppeteerOptions]
- *   Options used by {@link Apify#launchPuppeteer} to start new Puppeteer instances.
- *   Shortcut to the corresponding {@link PuppeteerPool} option.
  * @property {AutoscaledPoolOptions} [autoscaledPoolOptions]
- *   Custom options passed to the underlying {@link AutoscaledPool} instance constructor.
- *   Note that the `runTaskFunction`, `isTaskReadyFunction` and `isFinishedFunction` options
- *   are provided by `PuppeteerCrawler` and should not be overridden.
+ *   Custom options passed to the underlying {@link AutoscaledPool} constructor.
+ *   Note that the `runTaskFunction` and `isTaskReadyFunction` options
+ *   are provided by `BasicCrawler` and cannot be overridden.
+ *   However, you can provide a custom implementation of `isFinishedFunction`.
  * @property {number} [minConcurrency=1]
- *   Sets the minimum concurrency (parallelism) for the crawl. Shortcut to the
- *   corresponding {@link AutoscaledPoolOptions.minConcurrency} option.
+ *   Sets the minimum concurrency (parallelism) for the crawl. Shortcut to the corresponding {@link AutoscaledPool} option.
  *
- *   *WARNING:* If you set this value too high with respect to the available system memory and CPU,
- *   your crawler will run extremely slow or crash. If you're not sure, just keep the default value
- *   and the concurrency will scale up automatically.
+ *   *WARNING:* If you set this value too high with respect to the available system memory and CPU, your crawler will run extremely slow or crash.
+ *   If you're not sure, just keep the default value and the concurrency will scale up automatically.
  * @property {number} [maxConcurrency=1000]
- *   Sets the maximum concurrency (parallelism) for the crawl. Shortcut to the
- *   corresponding {@link AutoscaledPoolOptions.maxConcurrency} option.
- * @property {boolean} [useSessionPool=false]
- *   If set to true Crawler will automatically use Session Pool. It will automatically retire
- *   sessions on 403, 401 and 429 status codes. It also marks Session as bad after a request timeout.
- * @property {SessionPoolOptions} [sessionPoolOptions]
- *   Custom options passed to the underlying {@link SessionPool} constructor.
- * @property {boolean} [persistCookiesPerSession=false]
- *   Automatically saves cookies to Session. Works only if Session Pool is used.
+ *   Sets the maximum concurrency (parallelism) for the crawl. Shortcut to the corresponding {@link AutoscaledPool} option.
+ * @property {boolean} [useSessionPool=true]
+ *   Puppeteer crawler will initialize the  {@link SessionPool} with the corresponding `sessionPoolOptions`.
+ *   The session instance will be than available in the `handleRequestFunction`.
+ * @property {SessionPoolOptions} [sessionPoolOptions] The configuration options for {@link SessionPool} to use.
  */
 
 /**
  * Provides a simple framework for parallel crawling of web pages
- * using headless Chrome with [Puppeteer](https://github.com/GoogleChrome/puppeteer).
+ * using headless Chrome with [Puppeteer](https://github.com/puppeteer/puppeteer).
  * The URLs to crawl are fed either from a static list of URLs
  * or from a dynamic queue of URLs enabling recursive crawling of websites.
  *
@@ -168,9 +192,7 @@ import { SessionPoolOptions } from '../session_pool/session_pool';
  * parameter of the `PuppeteerCrawler` constructor. For user convenience, the `minConcurrency` and `maxConcurrency`
  * {@link AutoscaledPoolOptions} are available directly in the `PuppeteerCrawler` constructor.
  *
- * Note that the pool of Puppeteer instances is internally managed by the {@link PuppeteerPool} class.
- * Many constructor options such as {@link PuppeteerPoolOptions.maxOpenPagesPerInstance} or
- * {@link PuppeteerPoolOptions.launchPuppeteerFunction} are passed directly to the {@link PuppeteerPool} constructor.
+ * Note that the pool of Puppeteer instances is internally managed by the {@link BrowserPool} class.
  *
  * **Example usage:**
  *
@@ -199,246 +221,98 @@ import { SessionPoolOptions } from '../session_pool/session_pool';
  *
  * await crawler.run();
  * ```
+ * @property {Statistics} stats
+ *  Contains statistics about the current run.
+ * @property {RequestList} [requestList]
+ *  A reference to the underlying {@link RequestList} class that manages the crawler's {@link Request}s.
+ *  Only available if used by the crawler.
+ * @property {RequestQueue} [requestQueue]
+ *  A reference to the underlying {@link RequestQueue} class that manages the crawler's {@link Request}s.
+ *  Only available if used by the crawler.
+ * @property {SessionPool} [sessionPool]
+ *  A reference to the underlying {@link SessionPool} class that manages the crawler's {@link Session}s.
+ *  Only available if used by the crawler.
+ * @property {ProxyConfiguration} proxyConfiguration
+ *  A reference to the underlying {@link ProxyConfiguration} class that manages the crawler's proxies.
+ *  Only available if used by the crawler.
+ * @property {BrowserPool} browserPool
+ *  A reference to the underlying `BrowserPool` class that manages the crawler's browsers.
+ *  For more information about it, see the [`browser-pool` module](https://github.com/apify/browser-pool).
  * @property {AutoscaledPool} autoscaledPool
  *  A reference to the underlying {@link AutoscaledPool} class that manages the concurrency of the crawler.
- *  Note that this property is only initialized after calling the {@link PuppeteerCrawler#run} function.
+ *  Note that this property is only initialized after calling the {@link CheerioCrawler#run} function.
  *  You can use it to change the concurrency settings on the fly,
  *  to pause the crawler by calling {@link AutoscaledPool#pause}
  *  or to abort it by calling {@link AutoscaledPool#abort}.
- *
  */
-class PuppeteerCrawler {
+class PuppeteerCrawler extends BrowserCrawler {
+    static optionsShape = {
+        ...BrowserCrawler.optionsShape,
+        browserPoolOptions: ow.optional.object,
+        launchContext: ow.optional.object,
+    }
+
     /**
-     * @param {PuppeteerCrawlerOptions} options
-     * All `PuppeteerCrawler` parameters are passed via an options object.
-     */
-    constructor(options) {
+    * @param {PuppeteerCrawlerOptions} options
+    * All `PuppeteerCrawler` parameters are passed via an options object.
+    */
+    constructor(options = {}) {
+        ow(options, 'PuppeteerCrawlerOptions', ow.object.exactShape(PuppeteerCrawler.optionsShape));
+
         const {
-            handlePageFunction,
-            gotoFunction = this._defaultGotoFunction,
-            handlePageTimeoutSecs = 60,
-            gotoTimeoutSecs = 60,
-
-            // AutoscaledPool shorthands
-            maxConcurrency,
-            minConcurrency,
-
-            // BasicCrawler options
-            requestList,
-            requestQueue,
-            maxRequestRetries,
-            maxRequestsPerCrawl,
-            handleFailedRequestFunction = this._defaultHandleFailedRequestFunction,
-            autoscaledPoolOptions,
-
-            // PuppeteerPool options and shorthands
-            puppeteerPoolOptions,
-            launchPuppeteerFunction,
-            launchPuppeteerOptions,
-
-            sessionPoolOptions = {},
-            persistCookiesPerSession = false,
-            useSessionPool = false,
+            launchContext = {}, // @TODO: should not launcher be inside launchContext
+            browserPoolOptions = {},
+            proxyConfiguration,
+            ...browserCrawlerOptions
         } = options;
 
-        checkParamOrThrow(handlePageFunction, 'options.handlePageFunction', 'Function');
-        checkParamOrThrow(handlePageTimeoutSecs, 'options.handlePageTimeoutSecs', 'Number');
-        checkParamOrThrow(handleFailedRequestFunction, 'options.handleFailedRequestFunction', 'Function');
-        checkParamOrThrow(gotoFunction, 'options.gotoFunction', 'Function');
-        checkParamOrThrow(gotoTimeoutSecs, 'options.gotoTimeoutSecs', 'Number');
-        checkParamOrThrow(puppeteerPoolOptions, 'options.puppeteerPoolOptions', 'Maybe Object');
-        checkParamOrThrow(useSessionPool, 'options.useSessionPool', 'Boolean');
-        checkParamOrThrow(sessionPoolOptions, 'options.sessionPoolOptions', 'Object');
-        checkParamOrThrow(persistCookiesPerSession, 'options.persistCookiesPerSession', 'Boolean');
+        const {
+            stealth = false,
+        } = launchContext;
 
-        if (options.gotoTimeoutSecs && options.gotoFunction) {
-            log.warning('PuppeteerCrawler: You are using gotoTimeoutSecs with a custom gotoFunction. '
-                + 'The timeout value will not be used. With a custom gotoFunction, you need to set the timeout in the function itself.');
+        if (launchContext.proxyUrl) {
+            throw new Error('PuppeteerCrawlerOptions.launchContext.proxyUrl is not allowed in PuppeteerCrawler.'
+                + 'Use PuppeteerCrawlerOptions.proxyConfiguration');
         }
+        const puppeteerLauncher = new PuppeteerLauncher(launchContext);
 
-        this.handlePageFunction = handlePageFunction;
-        this.gotoFunction = gotoFunction;
+        browserPoolOptions.browserPlugins = [
+            puppeteerLauncher.createBrowserPlugin(),
+        ];
 
-        this.handlePageTimeoutMillis = handlePageTimeoutSecs * 1000;
-        this.gotoTimeoutMillis = gotoTimeoutSecs * 1000;
-
-        this.puppeteerPoolOptions = {
-            ...puppeteerPoolOptions,
-            launchPuppeteerFunction,
-            launchPuppeteerOptions,
-        };
-
-        this.puppeteerPool = null; // Constructed when .run()
-        this.useSessionPool = useSessionPool;
-        this.sessionPoolOptions = sessionPoolOptions;
-        this.persistCookiesPerSession = persistCookiesPerSession;
-
-        /** @ignore */
-        this.basicCrawler = new BasicCrawler({
-            // Basic crawler options.
-            requestList,
-            requestQueue,
-            maxRequestRetries,
-            maxRequestsPerCrawl,
-            handleRequestFunction: (...args) => this._handleRequestFunction(...args),
-            handleRequestTimeoutSecs: handlePageTimeoutSecs * BASIC_CRAWLER_TIMEOUT_MULTIPLIER,
-            handleFailedRequestFunction,
-
-            // Autoscaled pool options.
-            maxConcurrency,
-            minConcurrency,
-            autoscaledPoolOptions,
+        super({
+            ...browserCrawlerOptions,
+            proxyConfiguration,
+            browserPoolOptions,
         });
+
+        if (stealth) {
+            this.browserPool.postLaunchHooks.push(async (pageId, browserController) => {
+                // @TODO: We can do this better now. It is not necessary to override the page.
+                // we can modify the page in the postPageCreateHook
+                const { hideWebDriver, ...newStealthOptions } = puppeteerLauncher.stealthOptions;
+                await applyStealthToBrowser(browserController.browser, newStealthOptions);
+            });
+        }
+
+        this.launchContext = launchContext;
     }
 
     /**
-     * Runs the crawler. Returns promise that gets resolved once all the requests got processed.
-     *
-     * @return {Promise<void>}
-     */
-    async run() {
-        if (this.isRunningPromise) return this.isRunningPromise;
-
-        if (this.useSessionPool) {
-            this.sessionPool = await openSessionPool(this.sessionPoolOptions);
-            this.puppeteerPoolOptions.sessionPool = this.sessionPool;
-        }
-        this.puppeteerPool = new PuppeteerPool(this.puppeteerPoolOptions);
-        try {
-            this.isRunningPromise = this.basicCrawler.run();
-            this.autoscaledPool = this.basicCrawler.autoscaledPool;
-
-            await this.isRunningPromise;
-        } finally {
-            if (this.useSessionPool) {
-                this.sessionPool.teardown();
-            }
-            this.puppeteerPool.destroy();
-        }
-    }
-
-    /**
-     * Wrapper around handlePageFunction that opens and closes pages etc.
-     *
-     * @param {Object} options
-     * @param {Request} options.request
-     * @param {AutoscaledPool} options.autoscaledPool
+     * @param {*} crawlingContext
+     * @param {*} gotoOptions
      * @ignore
+     * @protected
+     * @internal
      */
-    async _handleRequestFunction({ request, autoscaledPool }) {
-        let session;
-        const page = await this.puppeteerPool.newPage();
+    async _navigationHandler(crawlingContext, gotoOptions) {
+        if (this.gotoFunction) {
+            this.log.deprecated('PuppeteerCrawlerOptions.gotoFunction is deprecated. Use "preNavigationHooks" and "postNavigationHooks" instead.');
 
-        if (this.sessionPool) {
-            const browser = page.browser();
-            session = browser[BROWSER_SESSION_KEY_NAME];
-
-            // setting cookies to page
-            if (this.persistCookiesPerSession) {
-                await page.setCookie(...session.getPuppeteerCookies(request.url));
-            }
+            return this.gotoFunction(crawlingContext, gotoOptions);
         }
-
-        try {
-            const response = await this.gotoFunction({ page, request, autoscaledPool, puppeteerPool: this.puppeteerPool, session });
-            await this.puppeteerPool.serveLiveViewSnapshot(page);
-            request.loadedUrl = page.url();
-
-            // save cookies
-            if (this.persistCookiesPerSession) {
-                const cookies = await page.cookies(request.loadedUrl);
-                session.setPuppeteerCookies(cookies, request.loadedUrl);
-            }
-
-            await addTimeoutToPromise(
-                this.handlePageFunction({ page, request, autoscaledPool, puppeteerPool: this.puppeteerPool, response, session }),
-                this.handlePageTimeoutMillis,
-                `PuppeteerCrawler: handlePageFunction timed out after ${this.handlePageTimeoutMillis / 1000} seconds.`,
-            );
-
-            if (session) session.markGood();
-        } finally {
-            await this.puppeteerPool.recyclePage(page);
-        }
-    }
-
-    /**
-     * @param {Object} options
-     * @param {PuppeteerPage} options.page
-     * @param {Request} options.request
-     * @return {Promise<PuppeteerResponse>}
-     * @ignore
-     */
-    async _defaultGotoFunction({ page, request }) {
-        return gotoExtended(page, request, { timeout: this.gotoTimeoutMillis });
-    }
-
-    /**
-     * @param {Object} options
-     * @param {Error} options.error
-     * @param {Request} options.request
-     * @return {Promise<void>}
-     * @ignore
-     */
-    async _defaultHandleFailedRequestFunction({ error, request }) { // eslint-disable-line class-methods-use-this
-        const details = _.pick(request, 'id', 'url', 'method', 'uniqueKey');
-        log.exception(error, 'PuppeteerCrawler: Request failed and reached maximum retries', details);
+        return gotoExtended(crawlingContext.page, crawlingContext.request, gotoOptions);
     }
 }
 
 export default PuppeteerCrawler;
-
-/**
- * @typedef PuppeteerHandlePageInputs
- * @property {Request} request
- *   An instance of the {@link Request} object with details about the URL to open, HTTP method etc.
- * @property {PuppeteerResponse} response An instance of the Puppeteer
- *   [`Response`](https://pptr.dev/#?product=Puppeteer&show=api-class-response),
- *   which is the main resource response as returned by `page.goto(request.url)`.
- * @property {PuppeteerPage} page is an instance of the Puppeteer
- *   [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page)
- * @property {PuppeteerPool} puppeteerPool
- *   An instance of the {@link PuppeteerPool} used by this `PuppeteerCrawler`.
- * @property {AutoscaledPool} autoscaledPool
- *   A reference to the underlying {@link AutoscaledPool} class that manages the concurrency of the crawler.
- *   Note that this property is only initialized after calling the {@link PuppeteerCrawler#run} function.
- *   You can use it to change the concurrency settings on the fly,
- *   to pause the crawler by calling {@link AutoscaledPool#pause}
- *   or to abort it by calling {@link AutoscaledPool#abort}.
- * @property {Session} [session]
- */
-
-/**
- * @callback PuppeteerHandlePage
- * @param {PuppeteerHandlePageInputs} inputs Arguments passed to this callback.
- * @return {Promise<void>}
- */
-
-/**
- * @typedef PuppeteerGotoInputs
- * @property {PuppeteerPage} page is an instance of the Puppeteer
- *   [`Page`](https://pptr.dev/#?product=Puppeteer&show=api-class-page)
- * @property {Request} request
- *   An instance of the {@link Request} object with details about the URL to open, HTTP method etc.
- * @property {AutoscaledPool} autoscaledPool An instance of the `AutoscaledPool`.
- * @property {PuppeteerPool} puppeteerPool An instance of the {@link PuppeteerPool} used by this `PuppeteerCrawler`.
- * @property {Session} [session] `Session` object for this request.
- */
-
-/**
- * @callback PuppeteerGoto
- * @param {PuppeteerGotoInputs} inputs Arguments passed to this callback.
- * @return {Promise<(PuppeteerResponse | null)>} An instance of the Puppeteer
- *   [`Response`](https://pptr.dev/#?product=Puppeteer&show=api-class-response),
- *   which is the main resource response as returned by `page.goto(request.url)`.
- */
-
-/**
- * @callback LaunchPuppeteer
- * @param {LaunchPuppeteerOptions} inputs Arguments passed to this callback.
- * @return {Promise<Browser>} Promise that resolves to Puppeteer's `Browser` instance.
- *   This might be obtained by calling
- *   [puppeteer.launch()](https://pptr.dev/#?product=Puppeteer&version=v2.0.0&show=api-puppeteerlaunchoptions)
- *   directly, or by delegating to
- *   {@link Apify#launchPuppeteer}.
- */

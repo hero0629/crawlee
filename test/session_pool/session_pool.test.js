@@ -1,10 +1,11 @@
 import { SessionPool, openSessionPool } from '../../build/session_pool/session_pool';
 import Apify from '../../build';
 import events from '../../build/events';
-
+import * as utils from '../../build/utils';
 import { ACTOR_EVENT_NAMES_EX } from '../../build/constants';
 import { Session } from '../../build/session_pool/session';
 import LocalStorageDirEmulator from '../local_storage_dir_emulator';
+import defaultLog from '../../build/utils_log';
 
 describe('SessionPool - testing session pool', () => {
     let sessionPool;
@@ -12,17 +13,16 @@ describe('SessionPool - testing session pool', () => {
 
     beforeAll(async () => {
         localStorageEmulator = new LocalStorageDirEmulator();
-        await localStorageEmulator.init();
     });
 
     beforeEach(async () => {
-        await localStorageEmulator.clean();
+        const storageDir = await localStorageEmulator.init();
+        utils.apifyStorageLocal = utils.newStorageLocal({ storageDir });
         sessionPool = await Apify.openSessionPool();
     });
 
     afterEach(async () => {
         events.removeAllListeners(ACTOR_EVENT_NAMES_EX.PERSIST_STATE);
-        await localStorageEmulator.clean();
     });
 
     afterAll(async () => {
@@ -46,7 +46,6 @@ describe('SessionPool - testing session pool', () => {
                 maxUsageCount: 1,
             },
 
-
             persistStateKeyValueStoreId: 'TEST',
             persistStateKey: 'SESSION_POOL_STATE2',
 
@@ -55,13 +54,13 @@ describe('SessionPool - testing session pool', () => {
         };
         sessionPool = new SessionPool(opts);
         await sessionPool.initialize();
-        sessionPool.teardown();
+        await sessionPool.teardown();
 
-        Object.entries(opts).forEach(([key, value]) => {
+        Object.entries(opts).filter(([key]) => key !== 'sessionOptions').forEach(([key, value]) => {
             expect(sessionPool[key]).toEqual(value);
         });
-        const store = await Apify.openKeyValueStore('TEST');
-        await store.drop();
+        // log is appended to sessionOptions after sessionPool instantiation
+        expect(sessionPool.sessionOptions).toEqual({ ...opts.sessionOptions, log: expect.any(defaultLog.Log) });
     });
 
     test('should work using openSessionPool', async () => {
@@ -80,14 +79,13 @@ describe('SessionPool - testing session pool', () => {
 
         };
         sessionPool = await openSessionPool(opts);
-        sessionPool.teardown();
+        await sessionPool.teardown();
 
-
-        Object.entries(opts).forEach(([key, value]) => {
+        Object.entries(opts).filter(([key]) => key !== 'sessionOptions').forEach(([key, value]) => {
             expect(sessionPool[key]).toEqual(value);
         });
-        const store = await Apify.openKeyValueStore('TEST');
-        await store.drop();
+        // log is appended to sessionOptions after sessionPool instantiation
+        expect(sessionPool.sessionOptions).toEqual({ ...opts.sessionOptions, log: expect.any(defaultLog.Log) });
     });
 
     describe('should retrieve session', () => {
@@ -118,31 +116,37 @@ describe('SessionPool - testing session pool', () => {
             expect(isCalled).toBe(true); //eslint-disable-line
         });
 
-        test(
-            'should delete picked session when it is usable a create a new one',
-            async () => {
-                sessionPool.maxPoolSize = 1;
-                await sessionPool.getSession();
-                const session = sessionPool.sessions[0];
+        test('should delete picked session when it is unusable and create a new one', async () => {
+            sessionPool.maxPoolSize = 1;
+            await sessionPool.addSession();
 
-                session.errorScore += session.maxErrorScore;
-                let isCalled = false;
-                const oldRemove = sessionPool._removeSession; //eslint-disable-line
+            const session = await sessionPool.getSession();
+            expect(sessionPool.sessions[0].id === session.id).toBe(true);
 
-                sessionPool._removeSession = (session) => { //eslint-disable-line
-                    isCalled = true;
-                    return oldRemove.bind(sessionPool)(session);
-                };
+            session.errorScore += session.maxErrorScore;
+            await sessionPool.getSession();
 
-                await sessionPool.getSession();
-
-                expect(isCalled).toBe(true); //eslint-disable-line
-                expect(sessionPool.sessions[0].id === session.id).toBe(false); //eslint-disable-line
-                expect(sessionPool.sessions).toHaveLength(1);
-            },
-        );
+            expect(sessionPool.sessions[0].id === session.id).toBe(false);
+            expect(sessionPool.sessions).toHaveLength(1);
+        });
     });
 
+    test('get state should work', async () => {
+        const url = 'https://example.com';
+        const cookies = [
+            { name: 'cookie1', value: 'my-cookie' },
+            { name: 'cookie2', value: 'your-cookie' },
+        ];
+
+        const newSession = await sessionPool.getSession();
+        newSession.setPuppeteerCookies(cookies, url);
+
+        const state = sessionPool.getState();
+        expect(state).toBeInstanceOf(Object);
+        expect(state).toHaveProperty('usableSessionsCount');
+        expect(state).toHaveProperty('retiredSessionsCount');
+        expect(state).toHaveProperty('sessions');
+    });
 
     test('should persist state and recreate it from storage', async () => {
         await sessionPool.getSession();
@@ -169,14 +173,13 @@ describe('SessionPool - testing session pool', () => {
             });
         });
 
-
         const loadedSessionPool = new SessionPool();
 
         await loadedSessionPool.initialize();
         expect(sessionPool.sessions).toHaveLength(loadedSessionPool.sessions.length);
         expect(sessionPool.maxPoolSize).toEqual(loadedSessionPool.maxPoolSize);
         expect(sessionPool.persistStateKey).toEqual(loadedSessionPool.persistStateKey);
-        sessionPool.teardown();
+        await sessionPool.teardown();
     });
 
     test('should create only maxPoolSize number of sessions', async () => {
@@ -202,7 +205,7 @@ describe('SessionPool - testing session pool', () => {
         });
 
         afterEach(async () => {
-            sessionPool.teardown();
+            await sessionPool.teardown();
         });
 
         test('on persist event', async () => {
@@ -228,13 +231,17 @@ describe('SessionPool - testing session pool', () => {
         });
     });
 
-    test('should remove session', async () => {
-        for (let i = 0; i < 10; i++) {
-            await sessionPool.getSession();
-        }
-        const picked = sessionPool.getSession();
-        sessionPool._removeSession(picked); // eslint-disable-line
-        expect(sessionPool.sessions.find(s => s.id === picked.id)).toEqual(undefined);
+    test('should remove retired sessions', async () => {
+        sessionPool.maxPoolSize = 1;
+        await sessionPool.getSession();
+
+        const session = sessionPool.sessions[0];
+        session.errorScore += session.maxErrorScore;
+        const { id: retiredSessionId } = session;
+
+        await sessionPool.getSession();
+
+        expect(sessionPool.sessions.find((s) => s.id === retiredSessionId)).toEqual(undefined);
     });
 
     test('should recreate only usable sessions', async () => {
@@ -255,7 +262,31 @@ describe('SessionPool - testing session pool', () => {
         await newSessionPool.initialize();
         expect(newSessionPool.sessions).toHaveLength(10 - invalidSessionsCount);
 
-        newSessionPool.teardown();
+        await newSessionPool.teardown();
+    });
+
+    test('should persist state on teardown', async () => {
+        const persistStateKey = 'TEST-KEY';
+        const persistStateKeyValueStoreId = 'TEST-VALUE-STORE';
+
+        const newSessionPool = await Apify.openSessionPool({
+            maxPoolSize: 1,
+            persistStateKeyValueStoreId,
+            persistStateKey,
+        });
+
+        await newSessionPool.teardown();
+
+        const kvStore = await Apify.openKeyValueStore(newSessionPool.persistStateKeyValueStoreId);
+        const state = await kvStore.getValue(newSessionPool.persistStateKey);
+
+        expect(newSessionPool.persistStateKeyValueStoreId).toBeDefined();
+        expect(newSessionPool.persistStateKey).toBeDefined();
+        expect(state).toBeDefined();
+        expect(state).toBeInstanceOf(Object);
+        expect(state).toHaveProperty('usableSessionsCount');
+        expect(state).toHaveProperty('retiredSessionsCount');
+        expect(state).toHaveProperty('sessions');
     });
 
     test('should createSessionFunction work', async () => {
@@ -271,9 +302,70 @@ describe('SessionPool - testing session pool', () => {
         expect(session.constructor.name).toBe("Session") // eslint-disable-line
     });
 
-    it('should remove persist state event listener', () => {
+    it('should remove persist state event listener', async () => {
         expect(events.listenerCount(ACTOR_EVENT_NAMES_EX.PERSIST_STATE)).toEqual(1);
-        sessionPool.teardown();
+        await sessionPool.teardown();
         expect(events.listenerCount(ACTOR_EVENT_NAMES_EX.PERSIST_STATE)).toEqual(0);
+    });
+
+    test('should be able to create session with provided id', async () => {
+        await sessionPool.addSession({ id: 'test-session' });
+        const session = sessionPool.sessions[0];
+        expect(session.id).toBe('test-session');
+    });
+
+    test('should be able to add session instance and create new session with provided sessionOptions with addSession() ', async () => {
+        const session = new Apify.Session({ sessionPool, id: 'test-session-instance' });
+        await sessionPool.addSession(session);
+
+        await sessionPool.addSession({ id: 'test-session' });
+
+        expect(await sessionPool.getSession('test-session')).toBeDefined();
+        expect(await sessionPool.getSession('test-session-instance')).toBeDefined();
+    });
+
+    test('should not be able to add session to the pool with id already in the pool', async () => {
+        try {
+            await sessionPool.addSession({ id: 'test-session' });
+            await sessionPool.addSession({ id: 'test-session' });
+        } catch (e) {
+            expect(e.message).toBe("Cannot add session with id 'test-session' as it already exists in the pool");
+        }
+        expect.assertions(1);
+    });
+
+    test('should be able to retrieve session with provided id', async () => {
+        await sessionPool.addSession();
+        await sessionPool.addSession({ id: 'test-session' });
+        await sessionPool.addSession({ id: 'another-test-session' });
+
+        const session = await sessionPool.getSession('test-session');
+        expect(session.id).toBe('test-session');
+    });
+
+    test('should correctly populate session array and session map', async () => {
+        sessionPool.maxPoolSize = 10;
+
+        for (let i = 0; i < 20; i++) await sessionPool.getSession();
+
+        expect(sessionPool.sessions.length).toEqual(10);
+        expect(sessionPool.sessionMap.size).toEqual(10);
+        expect(sessionPool.sessions.length).toEqual(sessionPool.sessionMap.size);
+    });
+
+    test('should correctly remove retired sessions both from array and session map', async () => {
+        sessionPool.maxPoolSize = 10;
+
+        for (let i = 0; i < 10; i++) {
+            await sessionPool.addSession({ id: `session_${i}` });
+            const session = await sessionPool.getSession(`session_${i}`);
+            session.errorScore += session.maxErrorScore;
+        }
+
+        await sessionPool.getSession();
+
+        expect(sessionPool.sessions.length).toEqual(1);
+        expect(sessionPool.sessionMap.size).toEqual(1);
+        expect(sessionPool.sessions.length).toEqual(sessionPool.sessionMap.size);
     });
 });

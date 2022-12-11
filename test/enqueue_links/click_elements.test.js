@@ -1,5 +1,5 @@
 import Apify from '../../build';
-import { RequestQueue } from '../../build/request_queue';
+import { RequestQueue } from '../../build/storages/request_queue';
 import { clickElements, clickElementsAndInterceptNavigationRequests, isTargetRelevant } from '../../build/enqueue_links/click_elements';
 
 describe('enqueueLinksByClickingElements()', () => {
@@ -7,7 +7,7 @@ describe('enqueueLinksByClickingElements()', () => {
     let page;
 
     beforeAll(async () => {
-        browser = await Apify.launchPuppeteer({ headless: true });
+        browser = await Apify.launchPuppeteer({ launchOptions: { headless: true } });
     });
 
     afterAll(async () => {
@@ -25,7 +25,7 @@ describe('enqueueLinksByClickingElements()', () => {
     test('should work', async () => {
         const addedRequests = [];
         const requestQueue = Object.create(RequestQueue.prototype);
-        requestQueue.addRequest = async request => addedRequests.push(request);
+        requestQueue.addRequest = async (request) => addedRequests.push(request);
         const html = `
 <html>
     <body>
@@ -288,7 +288,7 @@ describe('enqueueLinksByClickingElements()', () => {
 </html>
         `;
             await page.setContent(html);
-            const callCounts = await new Promise(async (resolve) => {
+            const callCounts = await new Promise((resolve) => {
                 let spawnedTarget;
                 const counts = {
                     create: 0,
@@ -327,7 +327,7 @@ describe('enqueueLinksByClickingElements()', () => {
                 waitForPageIdleMillis: 1000,
                 maxWaitForPageIdleMillis: 5000,
             }));
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 1000));
             expect(interceptedRequests).toHaveLength(1);
             expect(interceptedRequests[0].url).toBe('https://example.com/');
             const pageContent = await page.content();

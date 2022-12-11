@@ -3,13 +3,38 @@
         "Guide": [
             "guides/motivation",
             "guides/quick-start",
+            "guides/apify-platform",
             "guides/getting-started",
-            "guides/what-is-an-actor",
-            "guides/data-storage",
+            "guides/request-storage",
+            "guides/result-storage",
             "guides/environment-variables",
+            "guides/proxy-management",
             "guides/session-management",
             "guides/type-script-actor",
-            "guides/puppeteer-live-view"
+            "guides/docker-images",
+            "guides/migration-to-v1"
+        ],
+        "Examples": [
+            "examples/accept-user-input",
+            "examples/add-data-to-dataset",
+            "examples/basic-crawler",
+            "examples/call-actor",
+            "examples/capture-screenshot",
+            "examples/cheerio-crawler",
+            "examples/crawl-all-links",
+            "examples/crawl-multiple-urls",
+            "examples/crawl-relative-links",
+            "examples/crawl-single-url",
+            "examples/crawl-sitemap",
+            "examples/crawl-some-links",
+            "examples/forms",
+            "examples/map-and-reduce",
+            "examples/playwright-crawler",
+            "examples/puppeteer-crawler",
+            "examples/puppeteer-recursive-crawl",
+            "examples/puppeteer-with-proxy",
+            "examples/synchronous-run",
+            "examples/use-stealth-mode"
         ],
         "API Reference": [
             "api/apify",
@@ -19,7 +44,9 @@
                 "ids": [
                     "api/basic-crawler",
                     "api/cheerio-crawler",
-                    "api/puppeteer-crawler"
+                    "api/playwright-crawler",
+                    "api/puppeteer-crawler",
+                    "api/statistics"
                 ]
             },
             {
@@ -35,9 +62,9 @@
                 "label": "Scaling",
                 "ids": [
                     "api/autoscaled-pool",
-                    "api/puppeteer-pool",
                     "api/session",
                     "api/session-pool",
+                    "api/proxy-configuration",
                     "api/snapshotter",
                     "api/system-status"
                 ]
@@ -58,6 +85,7 @@
                 "ids": [
                     "api/utils",
                     "api/log",
+                    "api/playwright",
                     "api/puppeteer",
                     "api/social"
                 ]
@@ -71,10 +99,13 @@
                     "typedefs/autoscaled-pool-options",
                     "typedefs/basic-crawler-options",
                     "typedefs/cheerio-crawler-options",
+                    "typedefs/playwright-crawler-options",
+                    "typedefs/playwright-launch-context",
                     "typedefs/puppeteer-crawler-options",
-                    "typedefs/puppeteer-pool-options",
+                    "typedefs/puppeteer-launch-context",
+                    "typedefs/proxy-configuration-options",
+                    "typedefs/proxy-info",
                     "typedefs/logger-options",
-                    "typedefs/launch-puppeteer-options",
                     "typedefs/request-options",
                     "typedefs/request-list-options",
                     "typedefs/request-as-browser-options",
@@ -97,11 +128,10 @@
                     "typedefs/handle-request-inputs",
                     "typedefs/prepare-request",
                     "typedefs/prepare-request-inputs",
+                    "typedefs/playwright-handle-page",
+                    "typedefs/playwright-handle-page-inputs",
                     "typedefs/puppeteer-handle-page",
-                    "typedefs/puppeteer-handle-page-inputs",
-                    "typedefs/launch-puppeteer",
-                    "typedefs/puppeteer-goto",
-                    "typedefs/puppeteer-goto-inputs"
+                    "typedefs/puppeteer-handle-page-inputs"
                 ]
             },
             {
@@ -139,7 +169,7 @@
                 "label": "Return Types",
                 "ids": [
                     "typedefs/actor-run",
-                    "typedefs/apify-call-error",
+                    "api/apify-call-error",
                     "typedefs/apify-env",
                     "typedefs/dataset-content",
                     "typedefs/memory-info",
@@ -150,18 +180,6 @@
                     "typedefs/system-info"
                 ]
             }
-        ]
-    },
-    "examples": {
-        "Examples": [
-            "examples/basic-crawler",
-            "examples/cheerio-crawler",
-            "examples/puppeteer-crawler",
-            "examples/puppeteer-with-proxy",
-            "examples/puppeteer-sitemap",
-            "examples/screenshots",
-            "examples/call-actor",
-            "examples/synchronous-run"
         ]
     }
 }

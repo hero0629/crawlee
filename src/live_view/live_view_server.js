@@ -4,13 +4,12 @@ import * as path from 'path';
 import { promisify } from 'util';
 import * as express from 'express';
 import * as socketio from 'socket.io';
-import { checkParamOrThrow } from 'apify-client/build/utils';
 import { promisifyServerListen } from 'apify-shared/utilities';
 import { ENV_VARS, LOCAL_ENV_VARS } from 'apify-shared/consts';
 import { Page } from 'puppeteer'; // eslint-disable-line no-unused-vars
-import log from '../utils_log';
 import { addTimeoutToPromise } from '../utils';
 import Snapshot from './snapshot';
+import defaultLog from '../utils_log';
 
 const writeFile = promisify(fs.writeFile);
 const unlink = promisify(fs.unlink);
@@ -50,6 +49,7 @@ const DEFAULT_SCREENSHOT_DIR_PATH = path.resolve(LOCAL_STORAGE_DIR, 'live_view')
  *
  * When running locally, it is often best to use a headful browser for debugging, since it provides
  * a better view into the browser, including DevTools, but `LiveViewServer` works too.
+ * @ignore
  */
 class LiveViewServer {
     /**
@@ -80,10 +80,7 @@ class LiveViewServer {
             maxSnapshotFrequencySecs = 2,
         } = options;
 
-        checkParamOrThrow(screenshotDirectoryPath, 'options.screenshotDirectoryPath', 'String');
-        checkParamOrThrow(maxScreenshotFiles, 'options.maxScreenshotFiles', 'Number');
-        checkParamOrThrow(maxScreenshotFiles, 'options.snapshotTimeoutSecs', 'Number');
-        checkParamOrThrow(maxScreenshotFiles, 'options.maxSnapshotFrequencySecs', 'Number');
+        this.log = defaultLog.child({ prefix: 'LiveViewServer' });
         this.screenshotDirectoryPath = screenshotDirectoryPath;
         this.maxScreenshotFiles = maxScreenshotFiles;
         this.snapshotTimeoutMillis = snapshotTimeoutSecs * 1000;
@@ -116,9 +113,9 @@ class LiveViewServer {
         try {
             await ensureDir(this.screenshotDirectoryPath);
             await promisifyServerListen(this.httpServer)(this.port);
-            log.info('Live view web server started', { publicUrl: this.liveViewUrl });
+            this.log.info('Live view web server started', { publicUrl: this.liveViewUrl });
         } catch (err) {
-            log.exception(err, 'Live view web server failed to start.');
+            this.log.exception(err, 'Live view web server failed to start.');
             this._isRunning = false;
         }
     }
@@ -133,8 +130,8 @@ class LiveViewServer {
         return new Promise((resolve) => {
             this.httpServer.close((err) => {
                 this._isRunning = false;
-                if (err) log.exception(err, 'Live view web server could not be stopped.');
-                else log.info('Live view web server stopped.');
+                if (err) this.log.exception(err, 'Live view web server could not be stopped.');
+                else this.log.info('Live view web server stopped.');
                 resolve();
             });
         });
@@ -192,7 +189,9 @@ class LiveViewServer {
      * Returns an absolute path to the screenshot with the given index.
      * @param {number} screenshotIndex
      * @return {string}
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _getScreenshotPath(screenshotIndex) {
         return path.join(this.screenshotDirectoryPath, `${screenshotIndex}.jpeg`);
@@ -201,11 +200,13 @@ class LiveViewServer {
     /**
      * @param {Page} page
      * @return {Promise<Snapshot>}
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     async _makeSnapshot(page) {
         const pageUrl = page.url();
-        log.info('Making live view snapshot.', { pageUrl });
+        this.log.info('Making live view snapshot.', { pageUrl });
         const [htmlContent, screenshot] = await Promise.all([
             page.content(),
             page.screenshot({
@@ -228,24 +229,33 @@ class LiveViewServer {
 
     /**
      * @param {Snapshot} snapshot
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _pushSnapshot(snapshot) {
         // Send new snapshot to clients
-        log.debug('Sending live view snapshot', { createdAt: snapshot.createdAt, pageUrl: snapshot.pageUrl });
+        this.log.debug('Sending live view snapshot', { createdAt: snapshot.createdAt, pageUrl: snapshot.pageUrl });
         this.socketio.emit('snapshot', snapshot);
     }
 
     /**
      * Initiates an async delete and does not wait for it to complete.
      * @param {number} screenshotIndex
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _deleteScreenshot(screenshotIndex) {
         unlink(this._getScreenshotPath(screenshotIndex))
-            .catch(err => log.exception(err, 'Cannot delete live view screenshot.'));
+            .catch((err) => this.log.exception(err, 'Cannot delete live view screenshot.'));
     }
 
+    /**
+     * @ignore
+     * @protected
+     * @internal
+     */
     _setupHttpServer() {
         const containerPort = process.env[ENV_VARS.CONTAINER_PORT] || LOCAL_ENV_VARS[ENV_VARS.CONTAINER_PORT];
 
@@ -281,18 +291,20 @@ class LiveViewServer {
 
     /**
      * @param {socketio.Socket} socket
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _socketConnectionHandler(socket) {
         this.clientCount++;
-        log.info('Live view client connected', { clientId: socket.id });
+        this.log.info('Live view client connected', { clientId: socket.id });
         socket.on('disconnect', (reason) => {
             this.clientCount--;
-            log.info('Live view client disconnected', { clientId: socket.id, reason });
+            this.log.info('Live view client disconnected', { clientId: socket.id, reason });
         });
         socket.on('getLastSnapshot', () => {
             if (this.lastSnapshot) {
-                log.debug('Sending live view snapshot', { createdAt: this.lastSnapshot.createdAt, pageUrl: this.lastSnapshot.pageUrl });
+                this.log.debug('Sending live view snapshot', { createdAt: this.lastSnapshot.createdAt, pageUrl: this.lastSnapshot.pageUrl });
                 this.socketio.emit('snapshot', this.lastSnapshot);
             }
         });

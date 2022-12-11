@@ -1,35 +1,22 @@
-import * as _ from 'underscore';
 import { betterSetInterval, betterClearInterval } from 'apify-shared/utilities';
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import log from '../utils_log';
+import ow from 'ow';
 import Snapshotter, { SnapshotterOptions } from './snapshotter'; // eslint-disable-line import/named,no-unused-vars
 import SystemStatus, { SystemStatusOptions } from './system_status'; // eslint-disable-line import/named,no-unused-vars
-
-const DEFAULT_OPTIONS = {
-    maxConcurrency: 1000,
-    minConcurrency: 1,
-    desiredConcurrencyRatio: 0.90,
-    scaleUpStepRatio: 0.05,
-    scaleDownStepRatio: 0.05,
-    maybeRunIntervalSecs: 0.5,
-    loggingIntervalSecs: 60,
-    autoscaleIntervalSecs: 10,
-};
-
+import defaultLog from '../utils_log';
 
 /**
  * @typedef AutoscaledPoolOptions
- * @property {Function} runTaskFunction
+ * @property {Function} [runTaskFunction]
  *   A function that performs an asynchronous resource-intensive task.
  *   The function must either be labeled `async` or return a promise.
  *
- * @property {Function} isTaskReadyFunction
+ * @property {Function} [isTaskReadyFunction]
  *   A function that indicates whether `runTaskFunction` should be called.
  *   This function is called every time there is free capacity for a new task and it should
  *   indicate whether it should start a new task or not by resolving to either `true` or `false`.
  *   Besides its obvious use, it is also useful for task throttling to save resources.
  *
- * @property {Function} isFinishedFunction
+ * @property {Function} [isFinishedFunction]
  *   A function that is called only when there are no tasks to be processed.
  *   If it resolves to `true` then the pool's run finishes. Being called only
  *   when there are no tasks being processed means that as long as `isTaskReadyFunction()`
@@ -123,40 +110,50 @@ const DEFAULT_OPTIONS = {
  */
 class AutoscaledPool {
     /**
-     * @param {AutoscaledPoolOptions} options All `AutoscaledPool` configuration options.
+     * @param {AutoscaledPoolOptions} options
+     *  All `AutoscaledPool` configuration options.
      */
-    constructor(options = {}) {
+    constructor(options) {
+        ow(options, ow.object.exactShape({
+            runTaskFunction: ow.function,
+            isFinishedFunction: ow.function,
+            isTaskReadyFunction: ow.function,
+            maxConcurrency: ow.optional.number,
+            minConcurrency: ow.optional.number,
+            desiredConcurrency: ow.optional.number,
+            desiredConcurrencyRatio: ow.optional.number,
+            scaleUpStepRatio: ow.optional.number,
+            scaleDownStepRatio: ow.optional.number,
+            maybeRunIntervalSecs: ow.optional.number,
+            loggingIntervalSecs: ow.any(ow.number, ow.nullOrUndefined),
+            autoscaleIntervalSecs: ow.optional.number,
+            systemStatusOptions: ow.optional.object,
+            snapshotterOptions: ow.optional.object,
+            log: ow.optional.object,
+        }));
+
         const {
-            maxConcurrency,
-            minConcurrency,
-            desiredConcurrency,
-            desiredConcurrencyRatio,
-            scaleUpStepRatio,
-            scaleDownStepRatio,
-            maybeRunIntervalSecs,
-            loggingIntervalSecs,
-            autoscaleIntervalSecs,
             runTaskFunction,
             isFinishedFunction,
             isTaskReadyFunction,
+            maxConcurrency = 1000,
+            minConcurrency = 1,
+            desiredConcurrency,
+            desiredConcurrencyRatio = 0.90,
+            scaleUpStepRatio = 0.05,
+            scaleDownStepRatio = 0.05,
+            maybeRunIntervalSecs = 0.5,
+            loggingIntervalSecs = 60,
+            autoscaleIntervalSecs = 10,
             systemStatusOptions,
             snapshotterOptions,
-        } = _.defaults({}, options, DEFAULT_OPTIONS);
+            log = defaultLog,
+        } = options;
 
-        checkParamOrThrow(maxConcurrency, 'options.maxConcurrency', 'Number');
-        checkParamOrThrow(minConcurrency, 'options.minConcurrency', 'Number');
-        checkParamOrThrow(desiredConcurrency, 'options.desiredConcurrency', 'Maybe Number');
-        checkParamOrThrow(desiredConcurrencyRatio, 'options.desiredConcurrencyRatio', 'Number');
-        checkParamOrThrow(scaleUpStepRatio, 'options.scaleUpStepRatio', 'Number');
-        checkParamOrThrow(scaleDownStepRatio, 'options.scaleDownStepRatio', 'Number');
-        checkParamOrThrow(maybeRunIntervalSecs, 'options.maybeRunIntervalSecs', 'Number');
-        checkParamOrThrow(loggingIntervalSecs, 'options.loggingIntervalSecs', 'Number');
-        checkParamOrThrow(autoscaleIntervalSecs, 'options.autoscaleIntervalSecs', 'Number');
-        checkParamOrThrow(runTaskFunction, 'options.runTaskFunction', 'Function');
-        checkParamOrThrow(isFinishedFunction, 'options.isFinishedFunction', 'Function');
-        checkParamOrThrow(isTaskReadyFunction, 'options.isTaskReadyFunction', 'Function');
-        checkParamOrThrow(systemStatusOptions, 'options.systemStatusOptions', 'Maybe Object');
-        checkParamOrThrow(snapshotterOptions, 'options.snapshotterOptions', 'Maybe Object');
+        /**
+         * @type {defaultLog.Log}
+         */
+        this.log = log.child({ prefix: 'AutoscaledPool' });
 
         // Configurable properties.
         this.desiredConcurrencyRatio = desiredConcurrencyRatio;
@@ -182,29 +179,11 @@ class AutoscaledPool {
         this._maybeRunTask = this._maybeRunTask.bind(this);
 
         // Create instances with correct options.
-        const ssoCopy = Object.assign({}, systemStatusOptions);
-        if (!ssoCopy.snapshotter) ssoCopy.snapshotter = new Snapshotter(snapshotterOptions);
+        const ssoCopy = { ...systemStatusOptions };
+        if (!ssoCopy.snapshotter) ssoCopy.snapshotter = new Snapshotter({ ...snapshotterOptions, log: this.log });
         this.snapshotter = ssoCopy.snapshotter;
         this.systemStatus = new SystemStatus(ssoCopy);
     }
-
-
-    /**
-     * @ignore
-     */
-    setMaxConcurrency(maxConcurrency) {
-        log.deprecated('AutoscaledPool.setMaxConcurrency() is deprecated, use the "maxConcurrency" property instead');
-        this._maxConcurrency = maxConcurrency;
-    }
-
-    /**
-     * @ignore
-     */
-    setMinConcurrency(minConcurrency) {
-        log.deprecated('AutoscaledPool.setMaxConcurrency() is deprecated, use the "maxConcurrency" property instead');
-        this._minConcurrency = minConcurrency;
-    }
-
 
     /**
      * Gets the minimum number of tasks running in parallel.
@@ -224,7 +203,7 @@ class AutoscaledPool {
      * @param {number} value
      */
     set minConcurrency(value) {
-        checkParamOrThrow(value, 'value', 'Number');
+        ow(value, ow.number);
         this._minConcurrency = value;
     }
 
@@ -243,7 +222,7 @@ class AutoscaledPool {
      * @param {number} value
      */
     set maxConcurrency(value) {
-        checkParamOrThrow(value, 'value', 'Number');
+        ow(value, ow.number);
         this._maxConcurrency = value;
     }
 
@@ -264,7 +243,7 @@ class AutoscaledPool {
      * @param {number} value
      */
     set desiredConcurrency(value) {
-        checkParamOrThrow(value, 'value', 'Number');
+        ow(value, ow.number);
         this._desiredConcurrency = value;
     }
 
@@ -349,7 +328,7 @@ class AutoscaledPool {
             let timeout;
             if (timeoutSecs) {
                 timeout = setTimeout(() => {
-                    const err = new Error('AutoscaledPool: The pool\'s running tasks did not finish'
+                    const err = new Error('The pool\'s running tasks did not finish'
                         + `in ${timeoutSecs} secs after pool.pause() invocation.`);
                     reject(err);
                 }, timeoutSecs);
@@ -385,6 +364,8 @@ class AutoscaledPool {
      * It doesn't allow multiple concurrent runs of this method.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     async _maybeRunTask(intervalCallback) {
         // Check if the function was invoked by the maybeRunInterval and use an empty function if not.
@@ -401,7 +382,7 @@ class AutoscaledPool {
         const currentStatus = this.systemStatus.getCurrentStatus();
         const { isSystemIdle } = currentStatus;
         if (!isSystemIdle && this._currentConcurrency >= this._minConcurrency) {
-            log.perf('AutoscaledPool: Task will not be run. System is overloaded.', currentStatus);
+            this.log.perf('Task will not be run. System is overloaded.', currentStatus);
             return done();
         }
         // - a task is ready.
@@ -413,7 +394,7 @@ class AutoscaledPool {
             // We might have already rejected this promise.
             if (this.reject) {
                 // No need to log all concurrent errors.
-                log.exception(err, 'AutoscaledPool: isTaskReadyFunction failed');
+                this.log.exception(err, 'isTaskReadyFunction failed');
                 this.reject(err);
             }
         } finally {
@@ -444,7 +425,7 @@ class AutoscaledPool {
             // We might have already rejected this promise.
             if (this.reject) {
                 // No need to log all concurrent errors.
-                log.exception(err, 'AutoscaledPool: runTaskFunction failed.');
+                this.log.exception(err, 'runTaskFunction failed.');
                 this.reject(err);
             }
         }
@@ -456,6 +437,8 @@ class AutoscaledPool {
      * If the system IS overloaded and the settings allow it, it scales down.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     _autoscale(intervalCallback) {
         // Don't scale if paused.
@@ -486,7 +469,7 @@ class AutoscaledPool {
             const now = Date.now();
             if (now > this.lastLoggingTime + this.loggingIntervalMillis) {
                 this.lastLoggingTime = now;
-                log.info('AutoscaledPool state', {
+                this.log.info('state', {
                     currentConcurrency: this._currentConcurrency,
                     desiredConcurrency: this._desiredConcurrency,
                     systemStatus,
@@ -504,11 +487,13 @@ class AutoscaledPool {
      *
      * @param {Object} systemStatus for logging
      * @ignore
+     * @protected
+     * @internal
      */
     _scaleUp(systemStatus) {
         const step = Math.ceil(this._desiredConcurrency * this.scaleUpStepRatio);
         this._desiredConcurrency = Math.min(this._maxConcurrency, this._desiredConcurrency + step);
-        log.debug('AutoscaledPool: scaling up', {
+        this.log.debug('scaling up', {
             oldConcurrency: this._desiredConcurrency - step,
             newConcurrency: this._desiredConcurrency,
             systemStatus,
@@ -521,11 +506,13 @@ class AutoscaledPool {
      *
      * @param {Object} systemStatus for logging
      * @ignore
+     * @protected
+     * @internal
      */
     _scaleDown(systemStatus) {
         const step = Math.ceil(this._desiredConcurrency * this.scaleUpStepRatio);
         this._desiredConcurrency = Math.max(this._minConcurrency, this._desiredConcurrency - step);
-        log.debug('AutoscaledPool: scaling down', {
+        this.log.debug('scaling down', {
             oldConcurrency: this._desiredConcurrency + step,
             newConcurrency: this._desiredConcurrency,
             systemStatus,
@@ -539,6 +526,8 @@ class AutoscaledPool {
      * It doesn't allow multiple concurrent runs of this method.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     async _maybeFinish() {
         if (this.queryingIsFinished) return;
@@ -551,7 +540,7 @@ class AutoscaledPool {
         } catch (err) {
             if (this.reject) {
                 // No need to log all concurrent errors.
-                log.exception(err, 'AutoscaledPool: isFinishedFunction failed.');
+                this.log.exception(err, 'isFinishedFunction failed.');
                 this.reject(err);
             }
         } finally {
@@ -563,6 +552,8 @@ class AutoscaledPool {
      * Cleans up resources.
      *
      * @ignore
+     * @protected
+     * @internal
      */
     async _destroy() {
         this.resolve = null;

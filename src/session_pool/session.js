@@ -1,10 +1,10 @@
 import { cryptoRandomObjectId } from 'apify-shared/utilities';
-import { checkParamOrThrow } from 'apify-client/build/utils';
+import ow from 'ow';
 import { Cookie, CookieJar } from 'tough-cookie';
-import log from '../utils_log';
 import EVENTS from './events';
 import { STATUS_CODES_BLOCKED } from '../constants';
 import { getCookiesFromResponse } from './session_utils';
+import defaultLog from '../utils_log';
 
 // TYPE IMPORTS
 /* eslint-disable no-unused-vars,import/named,import/no-duplicates,import/order,import/no-cycle */
@@ -13,6 +13,9 @@ import { Cookie as PuppeteerCookie } from 'puppeteer';
 import { IncomingMessage } from 'http';
 import { Response as PuppeteerResponse } from 'puppeteer';
 /* eslint-enable no-unused-vars,import/named,import/no-duplicates,import/order,import/no-cycle */
+
+// CONSTANTS
+const DEFAULT_SESSION_MAX_AGE_SECS = 3000;
 
 /**
  * Persistable {@link Session} state.
@@ -32,7 +35,7 @@ import { Response as PuppeteerResponse } from 'puppeteer';
  * @typedef SessionOptions
  * @property {string} [id] - Id of session used for generating fingerprints. It is used as proxy session name.
  * @property {number} [maxAgeSecs=3000] - Number of seconds after which the session is considered as expired.
- * @property {object} [userData] - Object where custom user data can be stored. For example custom headers.
+ * @property {Object<string,*>} [userData] - Object where custom user data can be stored. For example custom headers.
  * @property {number} [maxErrorScore=3] - Maximum number of marking session as blocked usage.
  *   If the `errorScore` reaches the `maxErrorScore` session is marked as block and it is thrown away.
  *   It starts at 0. Calling the `markBad` function increases the `errorScore` by 1.
@@ -61,11 +64,28 @@ export class Session {
      *
      * @param {SessionOptions} options
      */
-    constructor(options = {}) {
+    constructor(options) {
+        ow(options, ow.object.exactShape({
+            sessionPool: ow.object.instanceOf(SessionPool),
+            id: ow.optional.string,
+            cookieJar: ow.optional.object,
+            maxAgeSecs: ow.optional.number,
+            userData: ow.optional.object,
+            maxErrorScore: ow.optional.number,
+            errorScoreDecrement: ow.optional.number,
+            createdAt: ow.optional.date,
+            expiresAt: ow.optional.date,
+            usageCount: ow.optional.number,
+            errorScore: ow.optional.number,
+            maxUsageCount: ow.optional.number,
+            log: ow.optional.object,
+        }));
+
         const {
+            sessionPool,
             id = `session_${cryptoRandomObjectId(10)}`,
             cookieJar = new CookieJar(),
-            maxAgeSecs = 3000,
+            maxAgeSecs = DEFAULT_SESSION_MAX_AGE_SECS,
             userData = {},
             maxErrorScore = 3,
             errorScoreDecrement = 0.5,
@@ -73,27 +93,12 @@ export class Session {
             usageCount = 0,
             errorScore = 0,
             maxUsageCount = 50,
-            sessionPool,
+            log = defaultLog,
         } = options;
 
-        const { expiresAt = new Date(Date.now() + (maxAgeSecs * 1000)) } = options;
+        const { expiresAt = this._getDefaultCookieExpirationDate(maxAgeSecs) } = options;
 
-        // Validation
-        checkParamOrThrow(id, 'options.id', 'String');
-        checkParamOrThrow(maxAgeSecs, 'options.maxAgeSecs', 'Number');
-        checkParamOrThrow(userData, 'options.userData', 'Object');
-        checkParamOrThrow(maxErrorScore, 'options.maxErrorScore', 'Number');
-        checkParamOrThrow(expiresAt, 'options.expiresAt', 'Maybe Date');
-        checkParamOrThrow(createdAt, 'options.createdAt', 'Date');
-        checkParamOrThrow(usageCount, 'options.usageCount', 'Number');
-        checkParamOrThrow(errorScore, 'options.errorScore', 'Number');
-        checkParamOrThrow(maxUsageCount, 'options.maxUsageCount', 'Number');
-        checkParamOrThrow(sessionPool, 'options.sessionPool', 'Object');
-
-        // sessionPool must be instance of SessionPool.
-        if (sessionPool.constructor.name !== 'SessionPool') {
-            throw new Error('Session: sessionPool must be instance of SessionPool');
-        }
+        this.log = log.child({ prefix: 'Session' });
 
         /**
          * @type {CookieJar}
@@ -102,6 +107,7 @@ export class Session {
         this.cookieJar = cookieJar.setCookie ? cookieJar : CookieJar.fromJSON(JSON.stringify(cookieJar));
         this.id = id;
         this.maxAgeSecs = maxAgeSecs;
+        /** @type {Object<string,*>} */
         this.userData = userData;
         this.maxErrorScore = maxErrorScore;
         this.errorScoreDecrement = errorScoreDecrement;
@@ -113,6 +119,8 @@ export class Session {
         this.errorScore = errorScore; // indicates number of markBaded request with the session
         this.maxUsageCount = maxUsageCount;
         this.sessionPool = sessionPool;
+
+        this._puppeteerCookieToTough = this._puppeteerCookieToTough.bind(this);
     }
 
     /**
@@ -162,6 +170,8 @@ export class Session {
         if (this.errorScore > 0) {
             this.errorScore -= this.errorScoreDecrement;
         }
+
+        this._maybeSelfRetire();
     }
 
     /**
@@ -205,6 +215,8 @@ export class Session {
     markBad() {
         this.errorScore += 1;
         this.usageCount += 1;
+
+        this._maybeSelfRetire();
     }
 
     /**
@@ -235,12 +247,12 @@ export class Session {
      */
     setCookiesFromResponse(response) {
         try {
-            const cookies = getCookiesFromResponse(response).filter(c => c);
+            const cookies = getCookiesFromResponse(response).filter((c) => c);
 
             this._setCookies(cookies, response.url);
         } catch (e) {
             // if invalid Cookie header is provided just log the exception.
-            log.exception(e, 'Session: Could not get cookies from response');
+            this.log.exception(e, 'Could not get cookies from response');
         }
     }
 
@@ -261,12 +273,8 @@ export class Session {
      * @param {string} url
      */
     setPuppeteerCookies(cookies, url) {
-        try {
-            this._setCookies(cookies.map(this._puppeteerCookieToTough), url);
-        } catch (e) {
-            // if invalid cookies are provided just log the exception. No need to retry the request automatically.
-            log.exception(e, 'Session: Could not set cookies in puppeteer format.');
-        }
+        const normalizedCookies = cookies.map(this._puppeteerCookieToTough);
+        this._setCookies(normalizedCookies, url);
     }
 
     /**
@@ -285,7 +293,7 @@ export class Session {
      * key1=value1; key2=value2 format, ready to be used in
      * a cookie header or elsewhere.
      * @param {string} url
-     * @return {string} - represents `Cookie` header.
+     * @return {string} represents `Cookie` header.
      */
     getCookieString(url) {
         return this.cookieJar.getCookieStringSync(url, {});
@@ -295,14 +303,21 @@ export class Session {
      * Transforms puppeteer cookie to tough-cookie.
      * @param {PuppeteerCookie} puppeteerCookie Cookie from puppeteer `page.cookies method.
      * @return {Cookie}
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _puppeteerCookieToTough(puppeteerCookie) {
+        const isExpiresValid = puppeteerCookie.expires && typeof puppeteerCookie.expires === 'number' && puppeteerCookie.expires > 0;
+        const expires = isExpiresValid ? new Date(puppeteerCookie.expires * 1000) : this._getDefaultCookieExpirationDate(this.maxAgeSecs);
+        const domain = typeof puppeteerCookie.domain === 'string' && puppeteerCookie.domain.startsWith('.')
+            ? puppeteerCookie.domain.slice(1)
+            : puppeteerCookie.domain;
         return new Cookie({
             key: puppeteerCookie.name,
             value: puppeteerCookie.value,
-            expires: new Date(puppeteerCookie.expires),
-            domain: puppeteerCookie.domain,
+            expires,
+            domain,
             path: puppeteerCookie.path,
             secure: puppeteerCookie.secure,
             httpOnly: puppeteerCookie.httpOnly,
@@ -313,13 +328,16 @@ export class Session {
      * Transforms tough-cookie to puppeteer cookie .
      * @param {Cookie} toughCookie - Cookie from CookieJar
      * @return {PuppeteerCookie} - Cookie from Puppeteer
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _toughCookieToPuppeteer(toughCookie) {
         return {
             name: toughCookie.key,
             value: toughCookie.value,
-            expires: new Date(toughCookie.expires).getTime(),
+            // Puppeteer and Playwright expect 'expires' to be 'Unix time in seconds', not ms
+            expires: new Date(toughCookie.expires).getTime() / 1000,
             domain: toughCookie.domain,
             path: toughCookie.path,
             secure: toughCookie.secure,
@@ -331,11 +349,46 @@ export class Session {
      * Sets cookies.
      * @param {Cookie[]} cookies
      * @param {string} url
-     * @private
+     * @ignore
+     * @protected
+     * @internal
      */
     _setCookies(cookies, url) {
+        const errorMessages = [];
         for (const cookie of cookies) {
-            this.cookieJar.setCookieSync(cookie, url, { ignoreError: false });
+            try {
+                this.cookieJar.setCookieSync(cookie, url, { ignoreError: false });
+            } catch (e) {
+                errorMessages.push(e.message);
+            }
+        }
+        // if invalid cookies are provided just log the exception. No need to retry the request automatically.
+        if (errorMessages.length) {
+            this.log.debug('Could not set cookies.', { errorMessages });
+        }
+    }
+
+    /**
+     * Calculate cookie expiration date
+     * @param {number} maxAgeSecs
+     * @return {Date} - calculated date by session max age seconds.
+     * @ignore
+     * @protected
+     * @internal
+     */
+    _getDefaultCookieExpirationDate(maxAgeSecs) {
+        return new Date(Date.now() + (maxAgeSecs * 1000));
+    }
+
+    /**
+     * Checks if session is not usable. if it is not retires the session.
+     * @ignore
+     * @protected
+     * @internal
+     */
+    _maybeSelfRetire() {
+        if (!this.isUsable()) {
+            this.retire();
         }
     }
 }

@@ -26,9 +26,7 @@ const EMAIL_REGEX = new RegExp(`^${EMAIL_REGEX_STRING}$`, 'i');
  */
 const EMAIL_REGEX_GLOBAL = new RegExp(EMAIL_REGEX_STRING, 'ig');
 
-
 const EMAIL_URL_PREFIX_REGEX = /^mailto:/i;
-
 
 /**
  * The function extracts email addresses from a plain text.
@@ -42,7 +40,6 @@ const emailsFromText = (text) => {
     if (!_.isString(text)) return [];
     return text.match(EMAIL_REGEX_GLOBAL) || [];
 };
-
 
 /**
  * The function extracts email addresses from a list of URLs.
@@ -66,7 +63,6 @@ const emailsFromUrls = (urls) => {
     }
     return emails;
 };
-
 
 // Supports URLs starting with `tel://`, `tel:/` and `tel:`, and similarly `phone`, `telephone` and `callto`
 const PHONE_URL_PREFIX_REGEX = /^(tel|phone|telephone|callto):(\/)?(\/)?/i;
@@ -123,16 +119,14 @@ const SKIP_PHONE_REGEXS = [
     '^[0-9]{4}-[0-9]{2}-[0-9]{2}$',
 ];
 
-
 const PHONE_REGEX_GLOBAL = new RegExp(`(${PHONE_REGEXS_STRINGS.join('|')})`, 'ig');
 const PHONE_REGEX = new RegExp(`^(${PHONE_REGEXS_STRINGS.join('|')})$`, 'i');
 const SKIP_PHONE_REGEX = new RegExp(`^(${SKIP_PHONE_REGEXS.join('|')})$`, 'i');
 
-
 /**
  * The function attempts to extract phone numbers from a text. Please note that
  * the results might not be accurate, since phone numbers appear in a large variety of formats and conventions.
- * If you encounter some problems, please [file an issue](https://github.com/apifytech/apify-js/issues).
+ * If you encounter some problems, please [file an issue](https://github.com/apify/apify-js/issues).
  * @param {string} text Text to search the phone numbers in.
  * @return {string[]} Array of phone numbers found.
  * If no phone numbers are found, the function returns an empty array.
@@ -156,7 +150,6 @@ const phonesFromText = (text) => {
 
     return phones;
 };
-
 
 /**
  * Finds phone number links in an array of URLs and extracts the phone numbers from them.
@@ -544,7 +537,7 @@ try {
  * ```
  *
  * @param {string} html HTML text
- * @param {Object} data Optional object which will receive the `text` and `$` properties
+ * @param {*|null} [data] Optional object which will receive the `text` and `$` properties
  *   that contain text content of the HTML and `cheerio` object, respectively. This is an optimization
  *   so that the caller doesn't need to parse the HTML document again, if needed.
  * @return {SocialHandles} An object with the social handles.
@@ -602,7 +595,6 @@ const parseHandlesFromHtml = (html, data = null) => {
 
     return result;
 };
-
 
 /**
  * A namespace that contains various utilities to help you extract social handles

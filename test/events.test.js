@@ -8,13 +8,16 @@ import Apify from '../build';
 
 describe('Apify.events', () => {
     let wss = null;
+    let clock;
     beforeEach(() => {
         wss = new WebSocket.Server({ port: 9099 });
+        clock = sinon.useFakeTimers();
         process.env[ENV_VARS.ACTOR_EVENTS_WS_URL] = 'ws://localhost:9099/someRunId';
         process.env[ENV_VARS.TOKEN] = 'dummy';
     });
     afterEach((done) => {
         wss.close(done);
+        clock.restore();
         delete process.env[ENV_VARS.ACTOR_EVENTS_WS_URL];
         delete process.env[ENV_VARS.TOKEN];
     });
@@ -43,7 +46,7 @@ describe('Apify.events', () => {
 
                 expect(req.url).toBe('/someRunId');
 
-                const send = obj => ws.send(JSON.stringify(obj));
+                const send = (obj) => ws.send(JSON.stringify(obj));
 
                 setTimeout(() => send({ name: 'name-1', data: [1, 2, 3] }), 50);
                 setTimeout(() => send({ name: 'name-1', data: { foo: 'bar' } }), 100);
@@ -57,8 +60,10 @@ describe('Apify.events', () => {
         expect(wsClosed).toBe(false);
         Apify.main(async () => {
             await isWsConnected;
-            Apify.events.on('name-1', data => eventsReceived.push(data));
-            await sleep(1000);
+            Apify.events.on('name-1', (data) => eventsReceived.push(data));
+            clock.tick(150);
+            clock.restore();
+            await sleep(10);
         });
 
         // Main will call process.exit() so we must stub it.
@@ -80,16 +85,21 @@ describe('Apify.events', () => {
 
     test('should work without Apify.main()', async () => {
         let wsClosed = false;
+        let finish;
+        const closePromise = new Promise((resolve) => {
+            finish = resolve;
+        });
         const isWsConnected = new Promise((resolve) => {
             wss.on('connection', (ws, req) => {
                 ws.on('close', () => {
                     wsClosed = true;
+                    finish();
                 });
                 resolve(ws);
 
                 expect(req.url).toBe('/someRunId');
 
-                const send = obj => ws.send(JSON.stringify(obj));
+                const send = (obj) => ws.send(JSON.stringify(obj));
 
                 setTimeout(() => send({ name: 'name-1', data: [1, 2, 3] }), 50);
                 setTimeout(() => send({ name: 'name-1', data: { foo: 'bar' } }), 100);
@@ -103,30 +113,29 @@ describe('Apify.events', () => {
         expect(wsClosed).toBe(false);
         await Apify.initializeEvents();
         await isWsConnected;
-        Apify.events.on('name-1', data => eventsReceived.push(data));
-        await sleep(1000);
+        Apify.events.on('name-1', (data) => eventsReceived.push(data));
+        clock.tick(150);
+        clock.restore();
+        await sleep(10);
 
         expect(eventsReceived).toEqual([[1, 2, 3], { foo: 'bar' }]);
 
         expect(wsClosed).toBe(false);
         Apify.stopEvents();
-        await sleep(10); // Here must be short sleep to get following line to later tick
+        await closePromise;
         expect(wsClosed).toBe(true);
     });
 
     test('should send persist state events in regular interval', async () => {
-        process.env.APIFY_TEST_PERSIST_INTERVAL_MILLIS = 1;
-
         const eventsReceived = [];
-        Apify.events.on(ACTOR_EVENT_NAMES_EX.PERSIST_STATE, data => eventsReceived.push(data));
+        Apify.events.on(ACTOR_EVENT_NAMES_EX.PERSIST_STATE, (data) => eventsReceived.push(data));
         await Apify.initializeEvents();
-        await sleep(10);
+        clock.tick(60001);
+        clock.tick(60001);
+        clock.tick(60001);
         await Apify.stopEvents();
         const eventCount = eventsReceived.length;
-        expect(eventCount).toBeGreaterThan(2);
-        await sleep(10);
+        expect(eventCount).toBe(3);
         expect(eventsReceived.length).toEqual(eventCount);
-
-        delete process.env.APIFY_TEST_PERSIST_INTERVAL_MILLIS;
     });
 });
