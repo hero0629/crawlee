@@ -2,7 +2,11 @@
 id: session-management
 title: Session Management
 ---
+ docs/fix-session-pool
+[`SessionPool`](/docs/api/session-pool) is a class that allows you to handle the rotation of proxy IP addresses along with cookies and other custom settings in Apify SDK.
+=======
 [`SessionPool`](../api/session-pool) is a class that allows you to handle the rotation of proxy IP addresses along with cookies and other custom settings in Apify SDK.
+ B4nan-patch-1
 
 The main benefit of a Session pool is that you can filter out blocked or non-working proxies,
 so your actor does not retry requests over known blocked/non-working proxies.
